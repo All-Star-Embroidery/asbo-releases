@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.2.4",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.4/all-star-bulk-order-block-1.2.4.zip",
+  "version": "1.2.5",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.5/all-star-bulk-order-block-1.2.5.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-27 14:59:28 +0000",
+  "last_updated": "2026-08-27 18:03:41 +0000",
   "description": "All Star Embroidery bulk ordering, artwork review, and WooCommerce My Account experience.",
-  "changelog": "<h4>1.2.4</h4><ul><li>Rebuilds the desktop/tablet My Account shell as exactly two sibling containers: one continuous navy account sidebar and one WooCommerce content area.</li><li>Fixes Dashboard, Account Details, and individual order pages being nested into or squeezed to the sidebar width.</li><li>Replaces the four rectangular Dashboard shortcut blocks with an unboxed editorial quick-access band.</li><li>Keeps the approved mobile Account menu unchanged and preserves Artwork attention indicators plus the All Star navy/gold/cream design system.</li><li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork storage/review, authentication, or order-security behavior changed.</li></ul>"
+  "changelog": "<h4>1.2.5</h4><ul><li>Replaces the redundant My Account Dashboard shortcut band with a customer-focused Current Project hub.</li><li>Keeps the personal greeting, adds action-needed artwork alerts only when the customer must act, adds an active-order workflow, and retains Recent Orders.</li><li>Adds a restrained Start Another Project action and responsive project-hub layouts using the All Star navy/gold/cream Crafted Commerce system.</li><li>Retains the v1.2.4 two-container account shell and approved mobile Account menu.</li><li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork persistence/review, authentication, or order-security behavior changed.</li></ul>"
 }
