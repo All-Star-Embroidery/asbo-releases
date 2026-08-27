@@ -44,6 +44,7 @@ jobs:
           ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
           python3 staging/v1.2.2-preview/apply_preview.py "$ROOT"
           python3 staging/v1.2.2-preview/apply_refinement.py "$ROOT"
+          python3 staging/v1.2.2-preview/apply_sidebar_structure_fix.py "$ROOT"
 
       - name: Validate patched plugin
         shell: bash
@@ -62,8 +63,11 @@ jobs:
           account = (root/'includes'/'class-asbo-account-experience.php').read_text()
           assert 'ASBO 1.2.2 BRAND SYSTEM' in account
           assert 'ASBO 1.2.2 tablet refinement' in account
+          assert 'ASBO 1.2.2 SIDEBAR STRUCTURE FIX' in account
           assert 'asbo-artwork-has-attention' in account
           assert 'asbo-account-quick-card__notice' in account
+          assert 'asbo-account-sidebar' in account
+          assert 'woocommerce_after_account_navigation' in account
           main = (root/'all-star-bulk-order-block.php').read_text()
           assert 'Version: 1.2.2' in main
           assert "private const VERSION = '1.2.2';" in main
@@ -96,7 +100,7 @@ jobs:
           ## Responsive account shell
           - Mobile uses a real Account menu disclosure rather than a horizontal tab strip.
           - Tablet gets a dedicated two-column rail + content layout.
-          - Fixes the dashboard-only split rail by explicitly sizing the identity/navigation grid rows so the navy sidebar stays continuous on Dashboard, Orders, Artwork, and the other endpoints.
+          - Fixes the large gap between the customer identity panel and account navigation on long Dashboard and View Order pages by wrapping both pieces in one structural sidebar grid item. Tall account content can no longer stretch a grid track between them.
           - Mobile touch targets remain 44px+ and form fields 48px.
 
           ## Dashboard actions + artwork attention
@@ -126,5 +130,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add all-star-bulk-order-block-1.2.2.zip RELEASE-1.2.2.md
-          git commit -m 'preview: rebuild ASBO 1.2.2 account refinements' || exit 0
+          git commit -m 'preview: rebuild ASBO 1.2.2 structural sidebar fix' || exit 0
           git push origin HEAD:account-redesign-v1.2.2
