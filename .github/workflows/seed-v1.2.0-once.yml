@@ -13,31 +13,92 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v5
         with:
           ref: main
+          fetch-depth: 2
 
-      - name: Validate ASBO v1.2.0 package
+      - name: Rebuild and validate ASBO v1.2.0
         shell: bash
         run: |
           set -euo pipefail
-          ZIP='all-star-bulk-order-block-1.2.0.zip'
-          test -f "$ZIP"
+
+          BASE='/tmp/all-star-bulk-order-block-1.1.10.zip'
+          BUILD='/tmp/asbo120'
+          PLUGIN="$BUILD/all-star-bulk-order-block-v1.0.0"
+          PATCH='/tmp/asbo-v1.2.0.patch'
+          ZIP="$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.0.zip"
+
           test -f 'RELEASE-1.2.0.md'
+          test -f 'staging/v1.2.0/part00'
+          test -f 'staging/v1.2.0/part11'
+
+          cat staging/v1.2.0/part* > "$PATCH"
+          echo '8a4386174859adc18d0e624f413cd645a72d9d212c77a5f70c960fef2dc4dd2b  /tmp/asbo-v1.2.0.patch' | sha256sum -c -
+          test "$(stat -c%s "$PATCH")" -eq 77288
+
+          curl -fL --retry 3 \
+            'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.10/all-star-bulk-order-block-1.1.10.zip' \
+            -o "$BASE"
+          unzip -t "$BASE" >/dev/null
+
+          rm -rf "$BUILD"
+          mkdir -p "$BUILD"
+          unzip -q "$BASE" -d "$BUILD"
+          test -f "$PLUGIN/all-star-bulk-order-block.php"
+
+          cd "$PLUGIN"
+          patch --dry-run -p1 < "$PATCH" >/dev/null
+          patch -p1 < "$PATCH"
+
+          php -l "$PLUGIN/all-star-bulk-order-block.php"
+          php -l "$PLUGIN/includes/class-asbo-artwork-review.php"
+          php -l "$PLUGIN/includes/class-asbo-account-experience.php"
+          node --check "$PLUGIN/block/editor.js"
+          python3 -m json.tool "$PLUGIN/block/block.json" >/dev/null
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('/tmp/asbo120/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php').read_text()
+          marker = "        return <<<'JS'\n"
+          start = s.index(marker, s.index('private static function inline_js')) + len(marker)
+          end = s.index('\nJS;', start)
+          Path('/tmp/asbo-inline.js').write_text(s[start:end])
+          PY
+          node --check /tmp/asbo-inline.js
+
+          grep -q 'Version: 1.2.0' "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q "private const VERSION = '1.2.0'" "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q '"version": "1.2.0"' "$PLUGIN/block/block.json"
+          grep -q 'ASBO_Account_Experience::boot();' "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q 'persist_artwork_status' "$PLUGIN/includes/class-asbo-artwork-review.php"
+          grep -q "add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint'" "$PLUGIN/includes/class-asbo-account-experience.php"
+
+          rm -f "$ZIP"
+          cd "$BUILD"
+          zip -qr "$ZIP" all-star-bulk-order-block-v1.0.0
+          cd "$GITHUB_WORKSPACE"
+
           unzip -t "$ZIP" >/dev/null
           unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
           unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/includes/class-asbo-account-experience.php'
           unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.0'
           unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/block/block.json | grep -q '"version": "1.2.0"'
-          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/includes/class-asbo-artwork-review.php > /tmp/artwork.php
-          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/includes/class-asbo-account-experience.php > /tmp/account.php
-          php -l /tmp/artwork.php
-          php -l /tmp/account.php
-          grep -q 'persist_artwork_status' /tmp/artwork.php
-          grep -q 'woocommerce_account_artwork_endpoint' /tmp/account.php
-          echo "Package size: $(stat -c%s "$ZIP") bytes"
+
+          echo "Validated package size: $(stat -c%s "$ZIP") bytes"
           sha256sum "$ZIP"
+
+      - name: Commit rebuilt WordPress ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f all-star-bulk-order-block-1.2.0.zip
+          git commit -m 'release: rebuild validated ASBO v1.2.0 ZIP' || true
+          git push
 
       - name: Create GitHub Release asset
         env:
@@ -47,7 +108,9 @@ jobs:
           set -euo pipefail
           if gh release view asbo-v1.2.0 >/dev/null 2>&1; then
             gh release upload asbo-v1.2.0 all-star-bulk-order-block-1.2.0.zip --clobber
-            gh release edit asbo-v1.2.0 --title 'All Star Bulk Order Block v1.2.0' --notes-file RELEASE-1.2.0.md
+            gh release edit asbo-v1.2.0 \
+              --title 'All Star Bulk Order Block v1.2.0' \
+              --notes-file RELEASE-1.2.0.md
           else
             gh release create asbo-v1.2.0 all-star-bulk-order-block-1.2.0.zip \
               --target main \
@@ -64,15 +127,17 @@ jobs:
           import json
           from datetime import datetime, timezone
           from pathlib import Path
-          p=Path('latest.json')
-          d=json.loads(p.read_text())
-          d['version']='1.2.0'
-          d['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.2.0/all-star-bulk-order-block-1.2.0.zip'
-          d['homepage']='https://github.com/All-Star-Embroidery/asbo-releases'
-          d['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
-          d['changelog']='<h4>1.2.0</h4><ul><li>Rebuilds WooCommerce My Account presentation into a responsive All Star customer experience while preserving native WooCommerce functionality.</li><li>Adds a dedicated Artwork hub, artwork status in Orders, and clearer order/artwork progression.</li><li>Redesigns customer and admin artwork review toward the approved Style-B card-based direction.</li><li>Hardens Approve Artwork and Request Changes persistence with save, cache clear, reload, and verification before reporting success.</li><li>No pricing, Supplier Sync, cart, shipping, checkout, or artwork-storage behavior changed.</li></ul>'
-          p.write_text(json.dumps(d,indent=2)+'\n')
+
+          p = Path('latest.json')
+          d = json.loads(p.read_text())
+          d['version'] = '1.2.0'
+          d['download_url'] = 'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.2.0/all-star-bulk-order-block-1.2.0.zip'
+          d['homepage'] = 'https://github.com/All-Star-Embroidery/asbo-releases'
+          d['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          d['changelog'] = '<h4>1.2.0</h4><ul><li>Rebuilds WooCommerce My Account presentation into a responsive All Star customer experience while preserving native WooCommerce functionality.</li><li>Adds a dedicated Artwork hub, artwork status in Orders, and clearer order/artwork progression.</li><li>Redesigns customer and admin artwork review toward the approved Style-B card-based direction.</li><li>Hardens Approve Artwork and Request Changes persistence with save, cache clear, reload, and verification before reporting success.</li><li>No pricing, Supplier Sync, cart, shipping, checkout, or artwork-storage behavior changed.</li></ul>'
+          p.write_text(json.dumps(d, indent=2) + '\n')
           PY
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add latest.json
