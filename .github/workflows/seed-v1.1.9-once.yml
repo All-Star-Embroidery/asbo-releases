@@ -1,0 +1,105 @@
+name: Seed ASBO v1.1.9 Once
+
+on:
+  issues:
+    types:
+      - opened
+
+permissions:
+  contents: write
+
+jobs:
+  seed:
+    if: ${{ github.event.issue.title == 'SEED ASBO 1.1.9' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Build and validate v1.1.9
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.8/all-star-bulk-order-block-1.1.8.zip' \
+            -o /tmp/base.zip
+          unzip -t /tmp/base.zip >/dev/null
+          rm -rf /tmp/asbo119
+          mkdir -p /tmp/asbo119
+          unzip -q /tmp/base.zip -d /tmp/asbo119
+
+          PLUGIN='/tmp/asbo119/all-star-bulk-order-block-v1.0.0'
+          python3 scripts/seed-1.1.9.py "$PLUGIN"
+
+          php -l "$PLUGIN/all-star-bulk-order-block.php"
+          php -l "$PLUGIN/includes/class-asbo-artwork-review.php"
+          node --check "$PLUGIN/block/editor.js"
+          python3 -m json.tool "$PLUGIN/block/block.json" >/dev/null
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('/tmp/asbo119/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php').read_text()
+          marker="        return <<<'JS'\n"
+          start=s.index(marker,s.index('private static function inline_js'))+len(marker)
+          end=s.index('\nJS;',start)
+          Path('/tmp/asbo-inline.js').write_text(s[start:end])
+          PY
+          node --check /tmp/asbo-inline.js
+
+          grep -q 'Version: 1.1.9' "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q "ASBO_Artwork_Review::boot();" "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q "Awaiting Review" "$PLUGIN/includes/class-asbo-artwork-review.php"
+          grep -q "Request Changes & Email Customer" "$PLUGIN/includes/class-asbo-artwork-review.php"
+
+          rm -f all-star-bulk-order-block-1.1.9.zip
+          cd /tmp/asbo119
+          zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.1.9.zip" all-star-bulk-order-block-v1.0.0
+          cd "$GITHUB_WORKSPACE"
+          unzip -t all-star-bulk-order-block-1.1.9.zip >/dev/null
+          unzip -l all-star-bulk-order-block-1.1.9.zip | grep -q 'all-star-bulk-order-block-v1.0.0/includes/class-asbo-artwork-review.php'
+          sha256sum all-star-bulk-order-block-1.1.9.zip
+
+      - name: Commit ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-bulk-order-block-1.1.9.zip
+          git commit -m 'release: seed ASBO v1.1.9 ZIP'
+          git push
+
+      - name: Publish Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create asbo-v1.1.9 all-star-bulk-order-block-1.1.9.zip \
+            --target main \
+            --title 'All Star Bulk Order Block v1.1.9' \
+            --notes-file RELEASE-1.1.9.md
+
+      - name: Update latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          p=Path('latest.json')
+          d=json.loads(p.read_text())
+          d['version']='1.1.9'
+          d['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.9/all-star-bulk-order-block-1.1.9.zip'
+          d['homepage']='https://github.com/All-Star-Embroidery/asbo-releases'
+          d['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          d['changelog']='<h4>1.1.9</h4><ul><li>Upgrades the existing post-checkout artwork uploader into a complete customer/admin review workflow.</li><li>Adds Artwork Needed, Awaiting Review, Changes Requested, and Approved states.</li><li>Emails the team on new/revised artwork submissions and emails customers on approval or requested changes.</li><li>Adds a native WooCommerce ASBO Artwork Review panel with secure file preview/download, review history, and approval controls.</li><li>Reuses existing artwork order metadata so current uploads remain attached.</li><li>No pricing, Supplier Sync, cart, shipping, or checkout pricing behavior changed.</li></ul>'
+          p.write_text(json.dumps(d,indent=2)+'\n')
+          PY
+          git add latest.json
+          git commit -m 'release: point updater to ASBO v1.1.9 Release asset'
+          git push
