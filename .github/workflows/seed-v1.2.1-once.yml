@@ -1,0 +1,132 @@
+name: Seed ASBO v1.2.1 Once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .seed-v1.2.1
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Validate ASBO v1.2.1 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP='all-star-bulk-order-block-1.2.1.zip'
+          BUILD='/tmp/asbo121'
+          PLUGIN="$BUILD/all-star-bulk-order-block-v1.0.0"
+
+          test -f "$ZIP"
+          test -f 'RELEASE-1.2.1.md'
+          echo 'e21d90293f571131dc0334f6d72129bf941ece55a396614c2a246eb8ed441a42  all-star-bulk-order-block-1.2.1.zip' | sha256sum -c -
+          test "$(stat -c%s "$ZIP")" -eq 71264
+          unzip -t "$ZIP" >/dev/null
+
+          rm -rf "$BUILD"
+          mkdir -p "$BUILD"
+          unzip -q "$ZIP" -d "$BUILD"
+
+          php -l "$PLUGIN/all-star-bulk-order-block.php"
+          php -l "$PLUGIN/includes/class-asbo-artwork-review.php"
+          php -l "$PLUGIN/includes/class-asbo-account-experience.php"
+          node --check "$PLUGIN/block/editor.js"
+          python3 -m json.tool "$PLUGIN/block/block.json" >/dev/null
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('/tmp/asbo121/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php').read_text()
+          marker="        return <<<'JS'\n"
+          start=s.index(marker,s.index('private static function inline_js'))+len(marker)
+          end=s.index('\nJS;',start)
+          Path('/tmp/asbo-inline.js').write_text(s[start:end])
+
+          art=Path('/tmp/asbo121/all-star-bulk-order-block-v1.0.0/includes/class-asbo-artwork-review.php').read_text()
+          marker='<script>\n        (function(){'
+          start=art.index(marker, art.index('private static function admin_action_script'))+len('<script>\n        ')
+          end=art.index('\n        </script>',start)
+          Path('/tmp/asbo-admin-artwork.js').write_text(art[start:end])
+          PY
+          node --check /tmp/asbo-inline.js
+          node --check /tmp/asbo-admin-artwork.js
+
+          grep -q 'Version: 1.2.1' "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q "private const VERSION = '1.2.1'" "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q '"version": "1.2.1"' "$PLUGIN/block/block.json"
+          grep -q "wp_ajax_asbo_approve_artwork" "$PLUGIN/includes/class-asbo-artwork-review.php"
+          grep -q "asbo-review-action-approve" "$PLUGIN/includes/class-asbo-artwork-review.php"
+          grep -q "account_endpoint_url" "$PLUGIN/includes/class-asbo-account-experience.php"
+          grep -q "asbo-view" "$PLUGIN/includes/class-asbo-account-experience.php"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.2.1 >/dev/null 2>&1; then
+            gh release upload v1.2.1 all-star-bulk-order-block-1.2.1.zip --clobber
+            gh release edit v1.2.1 --title 'All Star Bulk Order Block v1.2.1' --notes-file RELEASE-1.2.1.md
+          else
+            gh release create v1.2.1 all-star-bulk-order-block-1.2.1.zip \
+              --target main \
+              --title 'All Star Bulk Order Block v1.2.1' \
+              --notes-file RELEASE-1.2.1.md
+          fi
+
+      - name: Update latest.json and README
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          latest=Path('latest.json')
+          data=json.loads(latest.read_text())
+          data['version']='1.2.1'
+          data['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.1/all-star-bulk-order-block-1.2.1.zip'
+          data['homepage']='https://github.com/All-Star-Embroidery/asbo-releases'
+          data['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          data['description']='All Star Embroidery bulk ordering, artwork review, and WooCommerce My Account experience.'
+          data['changelog']='<h4>1.2.1</h4><ul><li>Fixes Approve Artwork and Request Changes by replacing invalid nested WooCommerce admin forms with authenticated AJAX review actions.</li><li>Fixes the My Account Artwork tab 404 with refreshed rewrite rules and a reliable fallback route.</li><li>Corrects Billing and Shipping address alignment into a true two-column desktop/tablet layout.</li><li>Restyles My Account and customer artwork with a lighter HeroUI-inspired surface system: fewer cards, minimal shadows, natural lists, soft fields, subtle separators and restrained All Star navy/gold accents.</li><li>No Supplier Sync pricing, cart, shipping, checkout, artwork storage or order-security behavior changed.</li></ul>'
+          latest.write_text(json.dumps(data,indent=2)+'\n')
+
+          readme=Path('README.md')
+          text=readme.read_text()
+          import re
+          text=re.sub(r'## Current release\n\n\*\*v[^*]+\*\*\n\nPackage: `[^`]+`\n\nGitHub Release asset SHA-256: `[^`]+`\n\nRelease asset size: \*\*[^*]+\*\*',
+                      '## Current release\n\n**v1.2.1**\n\nPackage: `all-star-bulk-order-block-1.2.1.zip`\n\nGitHub Release asset SHA-256: `e21d90293f571131dc0334f6d72129bf941ece55a396614c2a246eb8ed441a42`\n\nRelease asset size: **71,264 bytes**', text, count=1)
+          if '## v1.2.1 account and artwork corrections' not in text:
+              insert='''\n\n## v1.2.1 account and artwork corrections\n\n- Fixes artwork approval/request-changes actions in the WooCommerce admin by removing invalid nested forms and using authenticated AJAX actions.\n- Fixes the My Account Artwork link with a rewrite refresh plus a fallback route that does not depend on permalink regeneration.\n- Forces Billing and Shipping addresses into a stable two-column desktop/tablet layout.\n- Reworks the My Account UI toward a lighter HeroUI-inspired surface system with fewer cards, minimal shadows, subtle separators, soft fields, status chips and restrained All Star navy/gold accents.\n- Pricing, Supplier Sync, cart, shipping, checkout, artwork storage and order security remain unchanged.\n'''
+              pos=text.find('\n## WordPress update architecture')
+              text=text[:pos]+insert+text[pos:] if pos!=-1 else text+insert
+          readme.write_text(text)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest.json README.md
+          git commit -m 'release: point updater to ASBO v1.2.1' || true
+          git push
+
+      - name: Remove one-time publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase
+          git rm -f .seed-v1.2.1 .github/workflows/seed-v1.2.1-once.yml
+          git commit -m 'cleanup: remove temporary ASBO v1.2.1 publisher'
+          git push
