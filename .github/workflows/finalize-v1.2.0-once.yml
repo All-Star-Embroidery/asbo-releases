@@ -1,0 +1,33 @@
+name: Finalize ASBO v1.2.0 Release Once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .finalize-v1.2.0
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Verify and update v1.2.0 Release metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f RELEASE-1.2.0.md
+          gh release view v1.2.0 >/dev/null
+          ASSET_SIZE="$(gh api repos/All-Star-Embroidery/asbo-releases/releases/tags/v1.2.0 --jq '.assets[] | select(.name=="all-star-bulk-order-block-1.2.0.zip") | .size')"
+          test "$ASSET_SIZE" = "69141"
+          gh release edit v1.2.0 \
+            --title 'All Star Bulk Order Block v1.2.0' \
+            --notes-file RELEASE-1.2.0.md
