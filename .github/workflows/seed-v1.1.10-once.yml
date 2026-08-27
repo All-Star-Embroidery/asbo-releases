@@ -1,0 +1,112 @@
+name: Seed ASBO v1.1.10 Once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .seed-v1.1.10
+
+permissions:
+  contents: write
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Build and validate v1.1.10
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.9/all-star-bulk-order-block-1.1.9.zip' \
+            -o /tmp/base.zip
+          unzip -t /tmp/base.zip >/dev/null
+          rm -rf /tmp/asbo110
+          mkdir -p /tmp/asbo110
+          unzip -q /tmp/base.zip -d /tmp/asbo110
+
+          PLUGIN='/tmp/asbo110/all-star-bulk-order-block-v1.0.0'
+          python3 scripts/seed-1.1.10.py "$PLUGIN"
+
+          php -l "$PLUGIN/all-star-bulk-order-block.php"
+          php -l "$PLUGIN/includes/class-asbo-artwork-review.php"
+          node --check "$PLUGIN/block/editor.js"
+          python3 -m json.tool "$PLUGIN/block/block.json" >/dev/null
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('/tmp/asbo110/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php').read_text()
+          marker="        return <<<'JS'\n"
+          start=s.index(marker,s.index('private static function inline_js'))+len(marker)
+          end=s.index('\nJS;',start)
+          Path('/tmp/asbo-inline.js').write_text(s[start:end])
+          PY
+          node --check /tmp/asbo-inline.js
+
+          grep -q 'Version: 1.1.10' "$PLUGIN/all-star-bulk-order-block.php"
+          grep -q '"version": "1.1.10"' "$PLUGIN/block/block.json"
+          grep -q 'ASBO v1.1.10 — Impeccable-style All Star polish' "$PLUGIN/includes/class-asbo-artwork-review.php"
+          grep -q 'ASBO v1.1.10 — Impeccable-style All Star admin polish' "$PLUGIN/includes/class-asbo-artwork-review.php"
+
+          rm -f all-star-bulk-order-block-1.1.10.zip
+          cd /tmp/asbo110
+          zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.1.10.zip" all-star-bulk-order-block-v1.0.0
+          cd "$GITHUB_WORKSPACE"
+          unzip -t all-star-bulk-order-block-1.1.10.zip >/dev/null
+          unzip -l all-star-bulk-order-block-1.1.10.zip | grep -q 'all-star-bulk-order-block-v1.0.0/includes/class-asbo-artwork-review.php'
+          echo "Package size: $(stat -c%s all-star-bulk-order-block-1.1.10.zip) bytes"
+          sha256sum all-star-bulk-order-block-1.1.10.zip
+
+      - name: Commit ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-bulk-order-block-1.1.10.zip
+          git commit -m 'release: seed ASBO v1.1.10 ZIP'
+          git push
+
+      - name: Publish Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view asbo-v1.1.10 >/dev/null 2>&1; then
+            gh release upload asbo-v1.1.10 all-star-bulk-order-block-1.1.10.zip --clobber
+            gh release edit asbo-v1.1.10 --title 'All Star Bulk Order Block v1.1.10' --notes-file RELEASE-1.1.10.md
+          else
+            gh release create asbo-v1.1.10 all-star-bulk-order-block-1.1.10.zip \
+              --target main \
+              --title 'All Star Bulk Order Block v1.1.10' \
+              --notes-file RELEASE-1.1.10.md
+          fi
+
+      - name: Update latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          p=Path('latest.json')
+          d=json.loads(p.read_text())
+          d['version']='1.1.10'
+          d['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.10/all-star-bulk-order-block-1.1.10.zip'
+          d['homepage']='https://github.com/All-Star-Embroidery/asbo-releases'
+          d['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          d['changelog']='<h4>1.1.10</h4><ul><li>Impeccable-style visual polish for the customer Artwork section and WooCommerce Artwork Review panel.</li><li>Merges All Star navy, muted warm gold, white, and quiet neutrals with cleaner hierarchy and fewer nested cards.</li><li>Improves file rows, timelines, status presentation, focus states, action hierarchy, and responsive stacking.</li><li>No artwork workflow, email, order-note, pricing, Supplier Sync, cart, shipping, or checkout logic changed.</li></ul>'
+          p.write_text(json.dumps(d,indent=2)+'\n')
+          PY
+          git add latest.json
+          git commit -m 'release: point updater to ASBO v1.1.10 Release asset'
+          git push
