@@ -4,19 +4,33 @@ Canonical public release repository for the **All Star Bulk Order Block** WordPr
 
 ## Current release
 
-**v1.1.9**
+**v1.1.10**
 
-Package: `all-star-bulk-order-block-1.1.9.zip`
+Package: `all-star-bulk-order-block-1.1.10.zip`
 
-GitHub Release asset SHA-256: `2ec7f80649c74a17487f1e849d21995810d09bd1955219f93d15281179c58e18`
+GitHub Release asset SHA-256: `ce3e4b615c4a483292fa716e0e589752a436292e3fcae4534273a7fbfc0ffb5f`
 
-Release asset size: **58,285 bytes**
+Release asset size: **60,183 bytes**
 
-The package was validated for PHP syntax, the new artwork-review PHP module, Gutenberg/editor JavaScript syntax, inline storefront JavaScript syntax, `block.json`, WordPress ZIP structure, and ZIP archive integrity before publication.
+The package was validated for PHP syntax, artwork-review PHP syntax, Gutenberg/editor JavaScript syntax, inline storefront JavaScript syntax, `block.json`, WordPress ZIP structure, and ZIP archive integrity before publication.
 
-## v1.1.9 artwork workflow
+## v1.1.10 artwork visual polish
 
-ASBO now owns the complete post-checkout artwork workflow while preserving the order metadata and protected upload storage used by the previous Code Snippets implementation.
+The v1.1.9 upload/review workflow remains intact, but its customer and admin presentation now follows a quieter Impeccable-style hierarchy using All Star Embroidery’s navy, muted warm gold, white, and neutral palette.
+
+- Reduced nested cards, shadows, and competing borders.
+- Muted gold is used as an accent rather than a dominant surface color.
+- Navy establishes primary hierarchy and the admin approval action.
+- Green/red remain reserved for meaningful Approved / Changes Requested states.
+- Customer file rows and review history are lighter and more integrated with the WooCommerce order page.
+- The WooCommerce Artwork Review metabox now reads as one coherent review surface rather than multiple cards.
+- Responsive spacing, focus states, file previews, timelines, and action hierarchy were refined.
+
+This release is visual-only; upload handling, protected storage, artwork status logic, emails, WooCommerce Order Notes, pricing, Supplier Sync, cart, shipping, and checkout logic are unchanged.
+
+## Artwork workflow
+
+ASBO owns the complete post-checkout artwork workflow while preserving the order metadata and protected upload storage used by the previous Code Snippets implementation.
 
 Customer artwork states:
 
@@ -25,13 +39,11 @@ Customer artwork states:
 - **Changes Requested**
 - **Approved**
 
-The existing customer upload area on the Thank You page and **My Account → Orders → View Order** becomes one state-aware Artwork component instead of adding a second artwork box.
+The existing customer upload area on the Thank You page and **My Account → Orders → View Order** is one state-aware Artwork component rather than a separate duplicate review box.
 
 WooCommerce administrators receive an **ASBO Artwork Review** panel inside the existing order-edit screen with secure file preview/download, customer notes, review history, **Approve Artwork**, and **Request Changes & Email Customer** actions. Artwork review remains separate from the WooCommerce payment/fulfillment order status.
 
-New and revised artwork submissions notify the recipients configured for WooCommerce New Order emails. Approval and change-request actions email the customer and are also recorded in WooCommerce Order Notes.
-
-Existing artwork remains compatible because v1.1.9 continues to use:
+Existing artwork remains compatible through:
 
 - `_ase_order_artwork_files`
 - `_ase_artwork_status`
