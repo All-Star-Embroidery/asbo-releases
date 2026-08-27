@@ -22,25 +22,24 @@ Responsive pricing-matrix readability fix and release-repository migration for t
 
 - Moves ASBO's canonical update manifest to `All-Star-Embroidery/asbo-releases`.
 - v1.1.8 reads `https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/latest.json` for future updates.
-- The old release repository can point existing v1.1.7 installs at v1.1.8 once; after that, ASBO updates are independent of Supplier Sync releases.
-- A manual-only publisher is included in this repository and runs only through `workflow_dispatch`.
+- Existing v1.1.7 installations can be bridged once from the old release repository to this v1.1.8 package; after installation, ASBO updates are independent of Supplier Sync releases.
+- The permanent publisher in this repository is manual-only and runs only through `workflow_dispatch`.
 
 ## Validation
 
-The seeded v1.1.8 package passed:
+The published v1.1.8 package passed:
 
 - PHP syntax validation
 - Gutenberg/editor JavaScript syntax validation
-- Inline storefront JavaScript syntax validation
 - `block.json` JSON validation
 - ZIP integrity validation
 - WordPress plugin package structure validation
 
-Package SHA-256:
+GitHub Release asset SHA-256:
 
-`e0009d645e160c8deef6193e6050f80505153134fc3dfec29a61e3619a6555cb`
+`db73470d04b2e47358ba0d15a8d79aa128e952b4f031067dfa525a7193c1d0fb`
 
-Package size: **45,270 bytes**
+Release asset size: **45,436 bytes**
 
 ## Preserved behavior
 
