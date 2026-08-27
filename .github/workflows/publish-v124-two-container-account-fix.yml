@@ -1,0 +1,199 @@
+name: Publish ASBO 1.2.4 Two-Container Account Fix
+
+on:
+  push:
+    branches:
+      - account-redesign-v1.2.2
+    paths:
+      - '.seed-publish-v124-two-container-account-fix'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout account redesign branch
+        uses: actions/checkout@v5
+        with:
+          ref: account-redesign-v1.2.2
+          fetch-depth: 2
+
+      - name: Download production v1.2.3 base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-v123 /tmp/asbo-work
+          mkdir -p /tmp/asbo-v123 /tmp/asbo-work
+          gh release download v1.2.3 \
+            --repo All-Star-Embroidery/asbo-releases \
+            --pattern 'all-star-bulk-order-block-1.2.3.zip' \
+            --dir /tmp/asbo-v123
+          unzip -q /tmp/asbo-v123/all-star-bulk-order-block-1.2.3.zip -d /tmp/asbo-work
+          test -f /tmp/asbo-work/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
+
+      - name: Apply two-container account correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          python3 staging/v1.2.4/apply_v124.py "$ROOT"
+
+      - name: Validate source and account structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          php -l "$ROOT/all-star-bulk-order-block.php"
+          php -l "$ROOT/includes/class-asbo-account-experience.php"
+          php -l "$ROOT/includes/class-asbo-artwork-review.php"
+
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path('/tmp/asbo-work/all-star-bulk-order-block-v1.0.0')
+          main = (root/'all-star-bulk-order-block.php').read_text()
+          account = (root/'includes'/'class-asbo-account-experience.php').read_text()
+          block = json.loads((root/'block'/'block.json').read_text())
+
+          assert 'Version: 1.2.4' in main
+          assert "private const VERSION = '1.2.4';" in main
+          assert block['version'] == '1.2.4'
+          assert "wp_register_style( 'asbo-account-experience', false, array(), '1.2.4' );" in account
+
+          # Structural guarantees: one action renders the whole sidebar; the
+          # split open/close hook approach is no longer used.
+          assert "remove_action( 'woocommerce_account_navigation', 'woocommerce_account_navigation', 10 );" in account
+          assert "add_action( 'woocommerce_account_navigation', array( __CLASS__, 'render_account_sidebar' ), 10 );" in account
+          assert "woocommerce_after_account_navigation', array( __CLASS__, 'close_account_sidebar'" not in account
+          assert 'public static function close_account_sidebar' not in account
+          assert 'public static function render_account_sidebar' in account
+          assert "wc_get_template( 'myaccount/navigation.php' );" in account
+
+          # render_account_identity itself must not open the sidebar anymore.
+          identity = account.split('public static function render_account_identity', 1)[1].split('public static function render_account_sidebar', 1)[0]
+          assert '<aside class="asbo-account-sidebar"' not in identity
+
+          sidebar = account.split('public static function render_account_sidebar', 1)[1].split('public static function render_dashboard', 1)[0]
+          assert sidebar.count('<aside class="asbo-account-sidebar"') == 1
+          assert "self::render_account_identity();" in sidebar
+          assert "wc_get_template( 'myaccount/navigation.php' );" in sidebar
+          assert '</aside>' in sidebar
+
+          assert 'ASBO 1.2.4 TWO-CONTAINER ACCOUNT LAYOUT' in account
+          assert 'grid-template-areas:"asbo-sidebar asbo-main"' in account
+          assert '.woocommerce > .asbo-account-sidebar' in account
+          assert '.woocommerce > .woocommerce-MyAccount-content' in account
+          PY
+
+          echo 'ASBO 1.2.4 source and two-container structure validated.'
+
+      - name: Build installable ZIP and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f all-star-bulk-order-block-1.2.4.zip
+          (
+            cd /tmp/asbo-work
+            zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.4.zip" all-star-bulk-order-block-v1.0.0
+          )
+          unzip -t all-star-bulk-order-block-1.2.4.zip >/dev/null
+          unzip -p all-star-bulk-order-block-1.2.4.zip all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.4'
+
+          cat > RELEASE-1.2.4.md <<'EOF'
+          # All Star Bulk Order Block v1.2.4
+
+          Corrective release for the WooCommerce My Account desktop/tablet layout.
+
+          ## Two-container account structure
+          - Replaces the previous split wrapper-hook approach with one explicit server-rendered account sidebar.
+          - My Account now has exactly two first-level layout containers: the continuous navy account rail and the native WooCommerce content area.
+          - Fixes Dashboard, Account Details and individual order pages being squeezed under/to the sidebar width.
+          - Keeps the approved mobile Account menu and mobile responsive behavior unchanged.
+
+          ## Dashboard quick access
+          - Removes the four rectangle/table-style shortcut blocks.
+          - Orders, Artwork, Addresses and Account Details now live in one restrained editorial quick-access band with no individual boxes.
+          - Preserves the Artwork attention indicator, navy typography and Heritage Gold interaction details.
+
+          ## Preserved behavior
+          - No Supplier Sync pricing, ASBO pricing tiers, cart totals, shipping, checkout, artwork storage/review persistence, customer authentication, or order ownership/security behavior changed.
+          EOF
+
+          sha256sum all-star-bulk-order-block-1.2.4.zip
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.2.4 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload v1.2.4 all-star-bulk-order-block-1.2.4.zip --clobber --repo All-Star-Embroidery/asbo-releases
+            gh release edit v1.2.4 --repo All-Star-Embroidery/asbo-releases --title 'ASBO v1.2.4' --notes-file RELEASE-1.2.4.md
+          else
+            gh release create v1.2.4 all-star-bulk-order-block-1.2.4.zip \
+              --repo All-Star-Embroidery/asbo-releases \
+              --target account-redesign-v1.2.2 \
+              --title 'ASBO v1.2.4' \
+              --notes-file RELEASE-1.2.4.md
+          fi
+
+      - name: Update latest.json on main for WordPress
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API='repos/All-Star-Embroidery/asbo-releases/contents/latest.json'
+          SHA="$(gh api "$API?ref=main" --jq .sha)"
+          gh api "$API?ref=main" --jq .content | tr -d '\n' | base64 -d > /tmp/latest.json
+
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          p='/tmp/latest.json'
+          with open(p) as f:
+              data=json.load(f)
+          data['version']='1.2.4'
+          data['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.4/all-star-bulk-order-block-1.2.4.zip'
+          data['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          data['changelog']=(
+              '<h4>1.2.4</h4><ul>'
+              '<li>Rebuilds the desktop/tablet My Account shell as exactly two sibling containers: one continuous navy account sidebar and one WooCommerce content area.</li>'
+              '<li>Fixes Dashboard, Account Details, and individual order pages being nested into or squeezed to the sidebar width.</li>'
+              '<li>Replaces the four rectangular Dashboard shortcut blocks with an unboxed editorial quick-access band.</li>'
+              '<li>Keeps the approved mobile Account menu unchanged and preserves Artwork attention indicators plus the All Star navy/gold/cream design system.</li>'
+              '<li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork storage/review, authentication, or order-security behavior changed.</li>'
+              '</ul>'
+          )
+          with open(p,'w') as f:
+              json.dump(data,f,indent=2)
+              f.write('\n')
+          PY
+
+          CONTENT="$(base64 -w0 /tmp/latest.json)"
+          gh api --method PUT "$API" \
+            -f message='release: point WordPress updater to ASBO v1.2.4' \
+            -f content="$CONTENT" \
+            -f sha="$SHA" \
+            -f branch='main' >/dev/null
+
+      - name: Verify release and updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view v1.2.4 --repo All-Star-Embroidery/asbo-releases --json tagName,assets --jq '.tagName, .assets[].name'
+          VERSION="$(gh api repos/All-Star-Embroidery/asbo-releases/contents/latest.json?ref=main --jq .content | tr -d '\n' | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          URL="$(gh api repos/All-Star-Embroidery/asbo-releases/contents/latest.json?ref=main --jq .content | tr -d '\n' | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["download_url"])')"
+          test "$VERSION" = '1.2.4'
+          test "$URL" = 'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.4/all-star-bulk-order-block-1.2.4.zip'
+          echo 'ASBO v1.2.4 is published and WordPress updater metadata is correct.'
