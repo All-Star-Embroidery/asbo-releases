@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.1.8",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.8/all-star-bulk-order-block-1.1.8.zip",
+  "version": "1.1.9",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.9/all-star-bulk-order-block-1.1.9.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-27 00:33:00 +0000",
+  "last_updated": "2026-08-27 04:02:58 +0000",
   "description": "All Star Embroidery Gutenberg bulk-order workflow with WooCommerce and ASE Supplier Sync compatibility.",
-  "changelog": "<h4>1.1.8</h4><ul><li>Prevents bulk-pricing dollar amounts from overlapping on tablets and phones.</li><li>Narrow viewports now preserve readable price-column widths and use controlled horizontal scrolling instead of compressing currency values.</li><li>Keeps the Decoration method column visible while customers swipe across quantity tiers.</li><li>Uses tabular numerals for cleaner price alignment.</li><li>Migrates ASBO's built-in update manifest to All-Star-Embroidery/asbo-releases.</li><li>No customer prices, quantity thresholds, Supplier Sync logic, cart calculations, savings, artwork, or checkout behavior changed.</li></ul>"
+  "changelog": "<h4>1.1.9</h4><ul><li>Upgrades the existing post-checkout artwork uploader into a complete customer/admin review workflow.</li><li>Adds Artwork Needed, Awaiting Review, Changes Requested, and Approved states.</li><li>Emails the team on new/revised artwork submissions and emails customers on approval or requested changes.</li><li>Adds a native WooCommerce ASBO Artwork Review panel with secure file preview/download, review history, and approval controls.</li><li>Reuses existing artwork order metadata so current uploads remain attached.</li><li>No pricing, Supplier Sync, cart, shipping, or checkout pricing behavior changed.</li></ul>"
 }
