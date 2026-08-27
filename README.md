@@ -4,13 +4,13 @@ Canonical public release repository for the **All Star Bulk Order Block** WordPr
 
 ## Current release
 
-**v1.2.0**
+**v1.2.1**
 
-Package: `all-star-bulk-order-block-1.2.0.zip`
+Package: `all-star-bulk-order-block-1.2.1.zip`
 
-GitHub Release asset SHA-256: `4adb4cb0a9c4528453c41d8b03ea2529ab256dcf1c330c1e271e05093c429e24`
+GitHub Release asset SHA-256: `9217fcd3a41b3cb6106720f157f893ae2079f50f06571dd70b851c2b6a8c347e`
 
-Release asset size: **69,141 bytes**
+Release asset size: **71,264 bytes**
 
 The published Release asset matches the validated v1.2.0 package byte-for-byte and passes ZIP integrity plus PHP syntax checks for the main plugin, artwork-review module, and My Account experience module. The plugin header and `block.json` both report v1.2.0.
 
@@ -54,6 +54,15 @@ Existing artwork remains compatible through:
 - `_ase_order_artwork_files`
 - `_ase_artwork_status`
 - `_ase_artwork_customer_notes`
+
+
+## v1.2.1 account and artwork corrections
+
+- Fixes artwork approval/request-changes actions in the WooCommerce admin by removing invalid nested forms and using authenticated AJAX actions.
+- Fixes the My Account Artwork link with a rewrite refresh plus a fallback route that does not depend on permalink regeneration.
+- Forces Billing and Shipping addresses into a stable two-column desktop/tablet layout.
+- Reworks the My Account UI toward a lighter HeroUI-inspired surface system with fewer cards, minimal shadows, subtle separators, soft fields, status chips and restrained All Star navy/gold accents.
+- Pricing, Supplier Sync, cart, shipping, checkout, artwork storage and order security remain unchanged.
 
 ## WordPress update architecture
 
