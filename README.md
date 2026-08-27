@@ -4,50 +4,49 @@ Canonical public release repository for the **All Star Bulk Order Block** WordPr
 
 ## Current release
 
-**v1.2.0**
+**v1.2.1**
 
-Package: `all-star-bulk-order-block-1.2.0.zip`
+Package: `all-star-bulk-order-block-1.2.1.zip`
 
-GitHub Release asset SHA-256: `4adb4cb0a9c4528453c41d8b03ea2529ab256dcf1c330c1e271e05093c429e24`
+GitHub Release asset SHA-256: `9217fcd3a41b3cb6106720f157f893ae2079f50f06571dd70b851c2b6a8c347e`
 
-Release asset size: **69,141 bytes**
+Release asset size: **71,264 bytes**
 
-The published Release asset matches the validated v1.2.0 package byte-for-byte and passes ZIP integrity plus PHP syntax checks for the main plugin, artwork-review module, and My Account experience module. The plugin header and `block.json` both report v1.2.0.
+The v1.2.1 package was rebuilt from the validated v1.2.0 Release plus the reviewed v1.2.1 patch, then passed ZIP integrity, PHP syntax checks for the main plugin/artwork-review/My Account modules, JavaScript syntax checks, `block.json` validation, version checks, and package-structure checks before publication.
 
-## v1.2.0 My Account + artwork experience
+## v1.2.1 account and artwork corrections
 
-v1.2.0 is a major customer-account and artwork-review UX release. It keeps WooCommerce's native `[woocommerce_my_account]` system underneath the experience rather than replacing customer/account functionality.
+- Fixes **Approve Artwork** and **Request Changes** in the WooCommerce order editor by removing invalid nested forms and using authenticated AJAX actions.
+- Verifies the persisted artwork status before reporting success or sending the customer notification email.
+- Fixes the My Account **Artwork** link using a rewrite refresh plus a reliable fallback route that does not depend on permalink regeneration finishing immediately.
+- Forces Billing and Shipping addresses into a stable two-column desktop/tablet layout and a clean single-column mobile layout.
+- Reworks My Account toward a lighter **HeroUI-inspired** surface system with fewer cards, minimal shadows, subtle separators, soft fields, status chips, natural lists, and restrained All Star navy/gold accents.
+- Restyles the customer Artwork section so it flows naturally within the WooCommerce order instead of appearing as a separate widget.
+- Pricing, Supplier Sync, cart, shipping, checkout, artwork storage, and order security remain unchanged.
+
+## My Account + artwork experience
+
+ASBO keeps WooCommerce's native `[woocommerce_my_account]` system underneath the experience rather than replacing customer/account functionality.
 
 ### All Star My Account
 
-- Responsive All Star account shell with navy navigation, clean white content surfaces, stronger typography, and restrained warm-gold accents.
-- Restyles Dashboard, Orders, Downloads, Addresses, Payment Methods, Account Details, login/register, order views, forms, notices, tables, and buttons.
+- Responsive All Star account presentation with restrained navy/gold branding and WooCommerce-native functionality.
+- Styles Dashboard, Orders, Downloads, Addresses, Payment Methods, Account Details, login/register, order views, forms, notices, tables, and buttons.
 - Preserves native WooCommerce authentication, order ownership, billing/shipping, passwords, payment methods, downloads, logout, and third-party endpoints such as Wishlist.
-- Adds a clearer dashboard with quick access to Orders, Artwork, Addresses, and Account Details.
+- Provides quick access to Orders, Artwork, Addresses, and Account Details.
 
 ### Artwork hub
 
-- Adds **Artwork** as a native My Account endpoint directly after Orders.
+- Adds **Artwork** directly after Orders in My Account.
 - Shows artwork status across customer orders: **Artwork Needed**, **Awaiting Review**, **Changes Requested**, and **Approved**.
-- Adds direct **Add artwork**, **Upload revision**, and **View artwork** actions that return customers to the correct order/artwork section.
+- Provides direct **Add artwork**, **Upload revision**, and **View artwork** actions that return customers to the correct order/artwork section.
 - Adds artwork status and contextual artwork actions to the normal WooCommerce Orders experience.
 
 ### Customer + admin artwork review
 
-- Redesigns the customer Artwork component and WooCommerce admin Artwork Review panel toward the approved **Style B / card-based modern** direction.
-- Uses All Star navy for hierarchy, restrained warm gold for accents, clearer file cards, review history, status states, and responsive spacing.
-- Keeps existing secure artwork uploads, protected storage, customer notes, review history, replacement artwork, and 10K-stitch guidance intact.
-
-### Approval reliability
-
-- Hardens **Approve Artwork** and **Request Changes** persistence.
-- Artwork status is explicitly saved to order meta and the WooCommerce order, caches are cleared, the order is reloaded, and the stored status is verified before success is reported.
-- Approval email/success messaging occurs only after the persisted status verifies successfully.
-- Artwork review remains separate from WooCommerce Processing/Completed/payment/fulfillment status.
-
-## Artwork workflow
-
-ASBO owns the complete post-checkout artwork workflow while preserving the order metadata and protected upload storage used by the previous Code Snippets implementation.
+- Uses the same secure artwork-upload storage and order metadata introduced in the earlier artwork workflow.
+- Keeps customer notes, review history, replacement artwork, and 10K-stitch guidance intact.
+- WooCommerce administrators receive an **ASBO Artwork Review** section inside the existing order editor; normal WooCommerce payments, refunds, fulfillment, Order Notes, and other order controls remain untouched.
 
 Existing artwork remains compatible through:
 
