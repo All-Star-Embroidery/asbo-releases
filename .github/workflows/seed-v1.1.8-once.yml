@@ -1,0 +1,67 @@
+name: Seed ASBO v1.1.8 Once
+
+on:
+  issues:
+    types:
+      - opened
+
+permissions:
+  contents: write
+
+jobs:
+  seed:
+    if: ${{ github.event.issue.title == 'SEED ASBO 1.1.8' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Build v1.1.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 'https://github.com/rolejarczyk/ASE.SupplierSync-Releases/releases/download/asbo-v1.1.7/all-star-bulk-order-block-1.1.7.zip' -o /tmp/base.zip
+          unzip -t /tmp/base.zip >/dev/null
+          rm -rf /tmp/asbo118
+          mkdir -p /tmp/asbo118
+          unzip -q /tmp/base.zip -d /tmp/asbo118
+          python3 scripts/seed-1.1.8.py /tmp/asbo118/all-star-bulk-order-block-v1.0.0
+          php -l /tmp/asbo118/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
+          node --check /tmp/asbo118/all-star-bulk-order-block-v1.0.0/block/editor.js
+          python3 -m json.tool /tmp/asbo118/all-star-bulk-order-block-v1.0.0/block/block.json >/dev/null
+          rm -f all-star-bulk-order-block-1.1.8.zip
+          cd /tmp/asbo118
+          zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.1.8.zip" all-star-bulk-order-block-v1.0.0
+          cd "$GITHUB_WORKSPACE"
+          unzip -t all-star-bulk-order-block-1.1.8.zip >/dev/null
+          unzip -p all-star-bulk-order-block-1.1.8.zip all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.1.8'
+          sha256sum all-star-bulk-order-block-1.1.8.zip
+
+      - name: Commit ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-bulk-order-block-1.1.8.zip
+          git commit -m 'release: seed ASBO v1.1.8 ZIP'
+          git push
+
+      - name: Publish Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create asbo-v1.1.8 all-star-bulk-order-block-1.1.8.zip --target main --title 'All Star Bulk Order Block v1.1.8' --notes-file RELEASE-1.1.8.md
+
+      - name: Update latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase
+          python3 -c "import json; from pathlib import Path; p=Path('latest.json'); d=json.loads(p.read_text()); d['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.8/all-star-bulk-order-block-1.1.8.zip'; p.write_text(json.dumps(d,indent=2)+'\\n')"
+          git add latest.json
+          git commit -m 'release: point updater to ASBO v1.1.8 Release asset'
+          git push
