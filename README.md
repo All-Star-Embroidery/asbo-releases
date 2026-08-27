@@ -4,19 +4,42 @@ Canonical public release repository for the **All Star Bulk Order Block** WordPr
 
 ## Current release
 
-**v1.1.8**
+**v1.1.9**
 
-Package: `all-star-bulk-order-block-1.1.8.zip`
+Package: `all-star-bulk-order-block-1.1.9.zip`
 
-GitHub Release asset SHA-256: `db73470d04b2e47358ba0d15a8d79aa128e952b4f031067dfa525a7193c1d0fb`
+GitHub Release asset SHA-256: `2ec7f80649c74a17487f1e849d21995810d09bd1955219f93d15281179c58e18`
 
-Release asset size: **45,436 bytes**
+Release asset size: **58,285 bytes**
 
-The package was validated for PHP syntax, editor JavaScript syntax, `block.json`, WordPress ZIP structure, and ZIP archive integrity before publication.
+The package was validated for PHP syntax, the new artwork-review PHP module, Gutenberg/editor JavaScript syntax, inline storefront JavaScript syntax, `block.json`, WordPress ZIP structure, and ZIP archive integrity before publication.
+
+## v1.1.9 artwork workflow
+
+ASBO now owns the complete post-checkout artwork workflow while preserving the order metadata and protected upload storage used by the previous Code Snippets implementation.
+
+Customer artwork states:
+
+- **Artwork Needed**
+- **Awaiting Review**
+- **Changes Requested**
+- **Approved**
+
+The existing customer upload area on the Thank You page and **My Account → Orders → View Order** becomes one state-aware Artwork component instead of adding a second artwork box.
+
+WooCommerce administrators receive an **ASBO Artwork Review** panel inside the existing order-edit screen with secure file preview/download, customer notes, review history, **Approve Artwork**, and **Request Changes & Email Customer** actions. Artwork review remains separate from the WooCommerce payment/fulfillment order status.
+
+New and revised artwork submissions notify the recipients configured for WooCommerce New Order emails. Approval and change-request actions email the customer and are also recorded in WooCommerce Order Notes.
+
+Existing artwork remains compatible because v1.1.9 continues to use:
+
+- `_ase_order_artwork_files`
+- `_ase_artwork_status`
+- `_ase_artwork_customer_notes`
 
 ## WordPress update architecture
 
-ASBO reads `latest.json` to discover updates. Starting with **v1.1.8**, the plugin's built-in updater points to:
+ASBO reads `latest.json` to discover updates. The plugin's built-in updater points to:
 
 `https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/latest.json`
 
@@ -28,6 +51,7 @@ The versioned ZIP must always contain the stable plugin directory:
 all-star-bulk-order-block-v1.0.0/
 ├── all-star-bulk-order-block.php
 ├── README.txt
+├── includes/
 └── block/
 ```
 
@@ -46,9 +70,7 @@ To publish a future version manually:
 5. Enter `X.Y.Z`.
 6. The workflow validates the ZIP, creates or updates tag `asbo-vX.Y.Z`, uploads the ZIP as a real GitHub Release asset, and updates `latest.json` to the Release-asset URL.
 
-## v1.1.8 seed note
-
-A temporary one-time seeder was used only to move the initial v1.1.8 binary package into this new public repository and create its Release asset. That temporary trigger is removed after seeding; ongoing publishing remains manual-only.
+Temporary one-time seed workflows may be used during connector-driven migrations, but they must be removed after the release is verified. Ongoing publishing remains manual-only.
 
 ## Pricing safety
 
