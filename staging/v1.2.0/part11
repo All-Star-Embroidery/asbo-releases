@@ -1,4 +1,0 @@
-in dl>div{grid-template-columns:1fr;gap:2px}.asbo-review-admin__history,.asbo-review-admin__actions{padding-left:14px;padding-right:14px}.asbo-review-admin__actions form:first-child,.asbo-review-admin__actions form:first-child .button{width:100%}}
-         </style>
-         <?php
-     }
