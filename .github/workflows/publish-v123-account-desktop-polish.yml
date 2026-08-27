@@ -1,0 +1,173 @@
+name: Publish ASBO 1.2.3 Account Desktop Polish
+
+on:
+  push:
+    branches:
+      - account-redesign-v1.2.2
+    paths:
+      - '.seed-publish-v123-account-desktop-polish'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout account redesign branch
+        uses: actions/checkout@v5
+        with:
+          ref: account-redesign-v1.2.2
+          fetch-depth: 2
+
+      - name: Download production v1.2.1 base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-v121 /tmp/asbo-work
+          mkdir -p /tmp/asbo-v121 /tmp/asbo-work
+          gh release download v1.2.1 \
+            --repo All-Star-Embroidery/asbo-releases \
+            --pattern 'all-star-bulk-order-block-1.2.1.zip' \
+            --dir /tmp/asbo-v121
+          unzip -q /tmp/asbo-v121/all-star-bulk-order-block-1.2.1.zip -d /tmp/asbo-work
+          test -f /tmp/asbo-work/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
+
+      - name: Apply account redesign and desktop-only polish
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          python3 staging/v1.2.2-preview/apply_preview.py "$ROOT"
+          python3 staging/v1.2.2-preview/apply_refinement.py "$ROOT"
+          python3 staging/v1.2.2-preview/apply_sidebar_structure_fix.py "$ROOT"
+          python3 staging/v1.2.3/apply_desktop_polish.py "$ROOT"
+
+      - name: Validate release package source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          php -l "$ROOT/all-star-bulk-order-block.php"
+          php -l "$ROOT/includes/class-asbo-account-experience.php"
+          php -l "$ROOT/includes/class-asbo-artwork-review.php"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('/tmp/asbo-work/all-star-bulk-order-block-v1.0.0')
+          main = (root/'all-star-bulk-order-block.php').read_text()
+          account = (root/'includes'/'class-asbo-account-experience.php').read_text()
+          block = json.loads((root/'block'/'block.json').read_text())
+          assert 'Version: 1.2.3' in main
+          assert "private const VERSION = '1.2.3';" in main
+          assert block['version'] == '1.2.3'
+          assert 'ASBO 1.2.2 SIDEBAR STRUCTURE FIX' in account
+          assert 'ASBO 1.2.3 DESKTOP ACCOUNT RAIL + QUICK ACCESS POLISH' in account
+          assert '<aside class="asbo-account-sidebar"' in account
+          assert "woocommerce_after_account_navigation" in account
+          assert '@media (min-width:768px)' in account
+          PY
+
+      - name: Build installable ZIP and notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f all-star-bulk-order-block-1.2.3.zip
+          (
+            cd /tmp/asbo-work
+            zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.3.zip" all-star-bulk-order-block-v1.0.0
+          )
+          unzip -t all-star-bulk-order-block-1.2.3.zip >/dev/null
+          unzip -p all-star-bulk-order-block-1.2.3.zip all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.3'
+
+          cat > RELEASE-1.2.3.md <<'EOF'
+          # All Star Bulk Order Block v1.2.3
+
+          Desktop/tablet account polish for the new All Star Embroidery My Account design system.
+
+          ## Desktop account rail
+          - Fixes the customer identity/navigation disconnect that could appear on Dashboard, Account Details, and long individual order pages.
+          - Customer identity + native WooCommerce account navigation now live inside one continuous navy rail as a single layout item.
+          - The fix is desktop/tablet-only; the approved mobile Account menu experience is intentionally unchanged.
+
+          ## Dashboard quick access
+          - Restyles Orders, Artwork, Addresses, and Account Details from large boxed/table-like buttons into compact editorial quick links.
+          - Uses restrained separators, navy typography, Heritage Gold interaction details, and Warm Cream hover treatment instead of generic dashboard cards.
+          - Artwork attention notification remains visible when active artwork exists.
+
+          ## Preserved behavior
+          - No Supplier Sync pricing, ASBO pricing tiers, cart totals, shipping, checkout, artwork file storage/review persistence, authentication, or order ownership/security behavior changed.
+          EOF
+
+          sha256sum all-star-bulk-order-block-1.2.3.zip
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.2.3 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload v1.2.3 all-star-bulk-order-block-1.2.3.zip --clobber --repo All-Star-Embroidery/asbo-releases
+            gh release edit v1.2.3 --repo All-Star-Embroidery/asbo-releases --title 'ASBO v1.2.3' --notes-file RELEASE-1.2.3.md
+          else
+            gh release create v1.2.3 all-star-bulk-order-block-1.2.3.zip \
+              --repo All-Star-Embroidery/asbo-releases \
+              --target account-redesign-v1.2.2 \
+              --title 'ASBO v1.2.3' \
+              --notes-file RELEASE-1.2.3.md
+          fi
+
+      - name: Update latest.json on main for WordPress
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API='repos/All-Star-Embroidery/asbo-releases/contents/latest.json'
+          SHA="$(gh api "$API?ref=main" --jq .sha)"
+          gh api "$API?ref=main" --jq .content | tr -d '\n' | base64 -d > /tmp/latest.json
+
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          p='/tmp/latest.json'
+          with open(p) as f:
+              data=json.load(f)
+          data['version']='1.2.3'
+          data['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.3/all-star-bulk-order-block-1.2.3.zip'
+          data['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          data['changelog']=(
+              '<h4>1.2.3</h4><ul>'
+              '<li>Fixes the desktop/tablet My Account sidebar disconnect on Dashboard, Account Details, and long individual order pages by making customer identity and WooCommerce navigation one continuous navy rail.</li>'
+              '<li>Restyles Orders, Artwork, Addresses, and Account Details dashboard shortcuts as compact editorial quick links instead of boxed/table-like buttons.</li>'
+              '<li>Retains the approved mobile Account menu without changing its layout or interaction.</li>'
+              '<li>Preserves artwork attention indicators and the All Star navy/gold/cream Crafted Commerce design system.</li>'
+              '<li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork storage/review, authentication, or order-security behavior changed.</li>'
+              '</ul>'
+          )
+          with open(p,'w') as f:
+              json.dump(data,f,indent=2)
+              f.write('\n')
+          PY
+
+          CONTENT="$(base64 -w0 /tmp/latest.json)"
+          gh api --method PUT "$API" \
+            -f message='release: point WordPress updater to ASBO v1.2.3' \
+            -f content="$CONTENT" \
+            -f sha="$SHA" \
+            -f branch='main' >/dev/null
+
+      - name: Verify updater metadata and release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view v1.2.3 --repo All-Star-Embroidery/asbo-releases --json tagName,assets --jq '.tagName, .assets[].name'
+          VERSION="$(gh api repos/All-Star-Embroidery/asbo-releases/contents/latest.json?ref=main --jq .content | tr -d '\n' | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          test "$VERSION" = '1.2.3'
+          echo 'ASBO v1.2.3 is published and latest.json is updater-ready.'
