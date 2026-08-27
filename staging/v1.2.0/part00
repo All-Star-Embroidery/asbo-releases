@@ -1,0 +1,158 @@
+diff --git a/README.txt b/README.txt
+index a095549..bf63100 100644
+--- a/README.txt
++++ b/README.txt
+@@ -1,4 +1,4 @@
+-All Star Bulk Order Block v1.1.10
++All Star Bulk Order Block v1.2.0
+ 
+ GitHub-managed production release for All Star Embroidery.
+ 
+@@ -104,3 +104,15 @@ v1.1.10 Impeccable-style artwork polish:
+ - Improves typography, spacing, focus states, file rows, review history, and mobile stacking.
+ - Makes the admin review surface feel native to WooCommerce while carrying restrained All Star brand cues.
+ - Upload, approval, email, order-note, artwork status, pricing, Supplier Sync, cart, and checkout logic are unchanged.
++
++
++v1.2.0 All Star My Account experience:
++- Restyles the WooCommerce [woocommerce_my_account] output without replacing WooCommerce endpoints or account functionality.
++- Adds a responsive All Star account shell with navy navigation, customer identity, stronger typography, modern forms/tables, and mobile account navigation.
++- Adds a dedicated Artwork account endpoint that summarizes artwork progress across the customer’s recent orders.
++- Adds artwork status to My Account order lists and direct Add Artwork / Fix Artwork / Artwork actions.
++- Adds a dashboard overview with recent orders, artwork attention, address, and account-detail quick access.
++- Restyles order details, billing/shipping addresses, payment/account forms, downloads, login/register, and customer order views.
++- Upgrades the customer Artwork card and WooCommerce admin Artwork Review panel toward the approved Style-B card-based direction.
++- Hardens Approve Artwork and Request Changes persistence by saving order meta, clearing WooCommerce/order caches, and verifying the stored status before reporting success or sending the customer email.
++- Preserves WooCommerce authentication, orders, addresses, payment methods, downloads, account details, logout, third-party account endpoints, artwork files, review history, emails, pricing, cart, shipping, and checkout behavior.
+diff --git a/all-star-bulk-order-block.php b/all-star-bulk-order-block.php
+index e9d6e22..6bc276e 100644
+--- a/all-star-bulk-order-block.php
++++ b/all-star-bulk-order-block.php
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: All Star Bulk Order Block
+  * Description: Gutenberg block version of the All Star Embroidery bulk-order workflow.
+- * Version: 1.1.10
++ * Version: 1.2.0
+  * Update URI: https://github.com/All-Star-Embroidery/asbo-releases
+  * Author: All Star Embroidery
+  * Requires Plugins: woocommerce
+@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
+ }
+ 
+ final class ASBO_Plugin {
+-    private const VERSION = '1.1.10';
++    private const VERSION = '1.2.0';
+     private const META_ENABLED = '_asbo_enabled';
+     private const META_DISPLAY_NAME = '_asbo_display_name';
+     private const META_DESCRIPTION = '_asbo_short_description';
+@@ -5042,6 +5042,8 @@ JS;
+ }
+ 
+ require_once __DIR__ . '/includes/class-asbo-artwork-review.php';
++require_once __DIR__ . '/includes/class-asbo-account-experience.php';
+ 
+ ASBO_Plugin::boot();
+ ASBO_Artwork_Review::boot();
++ASBO_Account_Experience::boot();
+diff --git a/block/block.json b/block/block.json
+index e317b4c..52d9836 100644
+--- a/block/block.json
++++ b/block/block.json
+@@ -2,7 +2,7 @@
+   "$schema": "https://schemas.wp.org/trunk/block.json",
+   "apiVersion": 3,
+   "name": "all-star/bulk-order",
+-  "version": "1.1.10",
++  "version": "1.2.0",
+   "title": "All Star Bulk Order",
+   "category": "widgets",
+   "icon": "products",
+diff --git a/includes/class-asbo-account-experience.php b/includes/class-asbo-account-experience.php
+new file mode 100644
+index 0000000..1839515
+--- /dev/null
++++ b/includes/class-asbo-account-experience.php
+@@ -0,0 +1,471 @@
++<?php
++/**
++ * All Star My Account experience layered on top of WooCommerce.
++ *
++ * Keeps the native WooCommerce endpoints and functionality intact while
++ * improving information architecture, artwork discoverability and styling.
++ */
++
++if ( ! defined( 'ABSPATH' ) ) {
++    exit;
++}
++
++final class ASBO_Account_Experience {
++    private const ENDPOINT = 'artwork';
++    private const ENDPOINT_VERSION_OPTION = 'asbo_account_endpoint_version';
++    private const ENDPOINT_VERSION = '1.0.0';
++
++    public static function boot(): void {
++        if ( did_action( 'plugins_loaded' ) ) {
++            self::init();
++            return;
++        }
++
++        add_action( 'plugins_loaded', array( __CLASS__, 'init' ), 25 );
++    }
++
++    public static function init(): void {
++        if ( ! class_exists( 'WooCommerce' ) ) {
++            return;
++        }
++
++        add_action( 'init', array( __CLASS__, 'register_endpoint' ), 7 );
++        add_action( 'init', array( __CLASS__, 'maybe_flush_endpoint_rules' ), 99 );
++        add_filter( 'woocommerce_account_menu_items', array( __CLASS__, 'account_menu_items' ), 20 );
++        add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint', array( __CLASS__, 'render_artwork_hub' ) );
++        add_filter( 'woocommerce_endpoint_' . self::ENDPOINT . '_title', array( __CLASS__, 'artwork_endpoint_title' ), 10, 2 );
++
++        add_filter( 'body_class', array( __CLASS__, 'body_classes' ) );
++        add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_styles' ), 30 );
++        add_action( 'woocommerce_before_account_navigation', array( __CLASS__, 'render_account_identity' ), 5 );
++        add_action( 'woocommerce_account_dashboard', array( __CLASS__, 'render_dashboard' ), 5 );
++        add_action( 'woocommerce_view_order', array( __CLASS__, 'render_view_order_header' ), 1 );
++
++        add_filter( 'woocommerce_my_account_my_orders_columns', array( __CLASS__, 'orders_columns' ), 20 );
++        add_action( 'woocommerce_my_account_my_orders_column_asbo_artwork', array( __CLASS__, 'render_orders_artwork_column' ) );
++        add_filter( 'woocommerce_my_account_my_orders_actions', array( __CLASS__, 'orders_actions' ), 20, 2 );
++    }
++
++    public static function register_endpoint(): void {
++        add_rewrite_endpoint( self::ENDPOINT, EP_ROOT | EP_PAGES );
++    }
++
++    public static function maybe_flush_endpoint_rules(): void {
++        if ( self::ENDPOINT_VERSION === get_option( self::ENDPOINT_VERSION_OPTION ) ) {
++            return;
++        }
++
++        flush_rewrite_rules( false );
++        update_option( self::ENDPOINT_VERSION_OPTION, self::ENDPOINT_VERSION, false );
++    }
++
++    public static function account_menu_items( array $items ): array {
++        if ( isset( $items[ self::ENDPOINT ] ) ) {
++            return $items;
++        }
++
++        $result = array();
++        foreach ( $items as $key => $label ) {
++            $result[ $key ] = $label;
++            if ( 'orders' === $key ) {
++                $result[ self::ENDPOINT ] = __( 'Artwork', 'all-star-bulk-order' );
++            }
++        }
++
++        if ( ! isset( $result[ self::ENDPOINT ] ) ) {
++            $result[ self::ENDPOINT ] = __( 'Artwork', 'all-star-bulk-order' );
++        }
++
++        return $result;
++    }
++
++    public static f
