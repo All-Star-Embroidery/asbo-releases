@@ -3,7 +3,7 @@ name: Seed ASBO v1.2.1 Once
 on:
   push:
     branches:
-      - main
+      - release-v1.2.1-build
     paths:
       - .seed-v1.2.1
 
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: main
+          ref: release-v1.2.1-build
           fetch-depth: 2
 
       - name: Validate ASBO v1.2.1 package
@@ -85,7 +85,7 @@ jobs:
               --notes-file RELEASE-1.2.1.md
           fi
 
-      - name: Update latest.json and README
+      - name: Update latest.json and README on build branch
         shell: bash
         run: |
           set -euo pipefail
@@ -93,6 +93,7 @@ jobs:
           import json
           from datetime import datetime, timezone
           from pathlib import Path
+          import re
 
           latest=Path('latest.json')
           data=json.loads(latest.read_text())
@@ -106,7 +107,6 @@ jobs:
 
           readme=Path('README.md')
           text=readme.read_text()
-          import re
           text=re.sub(r'## Current release\n\n\*\*v[^*]+\*\*\n\nPackage: `[^`]+`\n\nGitHub Release asset SHA-256: `[^`]+`\n\nRelease asset size: \*\*[^*]+\*\*',
                       '## Current release\n\n**v1.2.1**\n\nPackage: `all-star-bulk-order-block-1.2.1.zip`\n\nGitHub Release asset SHA-256: `e21d90293f571131dc0334f6d72129bf941ece55a396614c2a246eb8ed441a42`\n\nRelease asset size: **71,264 bytes**', text, count=1)
           if '## v1.2.1 account and artwork corrections' not in text:
@@ -119,14 +119,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add latest.json README.md
-          git commit -m 'release: point updater to ASBO v1.2.1' || true
-          git push
-
-      - name: Remove one-time publisher
-        shell: bash
-        run: |
-          set -euo pipefail
-          git pull --rebase
-          git rm -f .seed-v1.2.1 .github/workflows/seed-v1.2.1-once.yml
-          git commit -m 'cleanup: remove temporary ASBO v1.2.1 publisher'
+          git commit -m 'release: prepare ASBO v1.2.1 updater metadata' || true
           git push
