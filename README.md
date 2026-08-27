@@ -8,22 +8,19 @@ Canonical public release repository for the **All Star Bulk Order Block** WordPr
 
 Package: `all-star-bulk-order-block-1.1.8.zip`
 
-SHA-256: `e0009d645e160c8deef6193e6050f80505153134fc3dfec29a61e3619a6555cb`
+GitHub Release asset SHA-256: `db73470d04b2e47358ba0d15a8d79aa128e952b4f031067dfa525a7193c1d0fb`
 
-The package has been validated for:
+Release asset size: **45,436 bytes**
 
-- PHP syntax
-- Gutenberg/editor JavaScript syntax
-- Inline storefront JavaScript syntax
-- `block.json` validity
-- WordPress ZIP structure
-- ZIP archive integrity
+The package was validated for PHP syntax, editor JavaScript syntax, `block.json`, WordPress ZIP structure, and ZIP archive integrity before publication.
 
 ## WordPress update architecture
 
 ASBO reads `latest.json` to discover updates. Starting with **v1.1.8**, the plugin's built-in updater points to:
 
 `https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/latest.json`
+
+`latest.json` then points WordPress at the versioned GitHub Release asset.
 
 The versioned ZIP must always contain the stable plugin directory:
 
@@ -36,15 +33,9 @@ all-star-bulk-order-block-v1.0.0/
 
 Do not rename that installed plugin folder between releases.
 
-## Current no-Actions seed
-
-v1.1.8 was seeded directly because GitHub Actions minutes were unavailable. The repository copy of the ZIP was uploaded as verified binary bytes, not as generated text/base64 content.
-
-Until the manual publisher is run, `latest.json` points directly at the verified raw repository ZIP. Once the manual publisher runs, it creates/updates the GitHub Release asset and rewrites `latest.json` to the preferred `/releases/download/...` URL.
-
 ## Manual-only publisher
 
-`.github/workflows/publish-manual.yml` has **only** a `workflow_dispatch` trigger. It will never run because of a push, issue, PR, or scheduled event.
+The permanent publisher is `.github/workflows/publish-manual.yml` and has **only** a `workflow_dispatch` trigger. It does not run on pushes, issues, pull requests, schedules, or tags.
 
 To publish a future version manually:
 
@@ -53,7 +44,11 @@ To publish a future version manually:
 3. Confirm the plugin header and internal plugin version both report `X.Y.Z`.
 4. Open **Actions → Publish ASBO Release (Manual Only) → Run workflow**.
 5. Enter `X.Y.Z`.
-6. The workflow validates the ZIP, creates or updates tag `asbo-vX.Y.Z`, uploads the ZIP as a real GitHub Release asset, and changes `latest.json` to the release-asset URL.
+6. The workflow validates the ZIP, creates or updates tag `asbo-vX.Y.Z`, uploads the ZIP as a real GitHub Release asset, and updates `latest.json` to the Release-asset URL.
+
+## v1.1.8 seed note
+
+A temporary one-time seeder was used only to move the initial v1.1.8 binary package into this new public repository and create its Release asset. That temporary trigger is removed after seeding; ongoing publishing remains manual-only.
 
 ## Pricing safety
 
