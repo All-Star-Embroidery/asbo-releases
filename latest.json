@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.2.1",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.1/all-star-bulk-order-block-1.2.1.zip",
+  "version": "1.2.3",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.3/all-star-bulk-order-block-1.2.3.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-27 10:52:52 +0000",
+  "last_updated": "2026-08-27 14:42:24 +0000",
   "description": "All Star Embroidery bulk ordering, artwork review, and WooCommerce My Account experience.",
-  "changelog": "<h4>1.2.1</h4><ul><li>Fixes Approve Artwork and Request Changes by replacing invalid nested WooCommerce admin forms with authenticated AJAX review actions.</li><li>Fixes the My Account Artwork tab 404 with refreshed rewrite rules and a reliable fallback route.</li><li>Corrects Billing and Shipping address alignment into a true two-column desktop/tablet layout.</li><li>Restyles My Account and customer artwork with a lighter HeroUI-inspired surface system: fewer cards, minimal shadows, natural lists, soft fields, subtle separators and restrained All Star navy/gold accents.</li><li>No Supplier Sync pricing, cart, shipping, checkout, artwork storage or order-security behavior changed.</li></ul>"
+  "changelog": "<h4>1.2.3</h4><ul><li>Fixes the desktop/tablet My Account sidebar disconnect on Dashboard, Account Details, and long individual order pages by making customer identity and WooCommerce navigation one continuous navy rail.</li><li>Restyles Orders, Artwork, Addresses, and Account Details dashboard shortcuts as compact editorial quick links instead of boxed/table-like buttons.</li><li>Retains the approved mobile Account menu without changing its layout or interaction.</li><li>Preserves artwork attention indicators and the All Star navy/gold/cream Crafted Commerce design system.</li><li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork storage/review, authentication, or order-security behavior changed.</li></ul>"
 }
