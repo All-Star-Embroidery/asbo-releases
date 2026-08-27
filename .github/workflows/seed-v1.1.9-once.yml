@@ -1,6 +1,11 @@
 name: Seed ASBO v1.1.9 Once
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .seed-v1.1.9
   issues:
     types:
       - opened
@@ -10,7 +15,7 @@ permissions:
 
 jobs:
   seed:
-    if: ${{ github.event.issue.title == 'SEED ASBO 1.1.9' }}
+    if: ${{ github.event_name == 'push' || github.event.issue.title == 'SEED ASBO 1.1.9' }}
     runs-on: ubuntu-latest
 
     steps:
