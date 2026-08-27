@@ -1,0 +1,80 @@
+name: Seed ASBO v1.2.0 Once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .seed-v1.2.0
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Validate ASBO v1.2.0 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP='all-star-bulk-order-block-1.2.0.zip'
+          test -f "$ZIP"
+          test -f 'RELEASE-1.2.0.md'
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
+          unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/includes/class-asbo-account-experience.php'
+          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.0'
+          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/block/block.json | grep -q '"version": "1.2.0"'
+          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/includes/class-asbo-artwork-review.php > /tmp/artwork.php
+          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/includes/class-asbo-account-experience.php > /tmp/account.php
+          php -l /tmp/artwork.php
+          php -l /tmp/account.php
+          grep -q 'persist_artwork_status' /tmp/artwork.php
+          grep -q 'woocommerce_account_artwork_endpoint' /tmp/account.php
+          echo "Package size: $(stat -c%s "$ZIP") bytes"
+          sha256sum "$ZIP"
+
+      - name: Create GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view asbo-v1.2.0 >/dev/null 2>&1; then
+            gh release upload asbo-v1.2.0 all-star-bulk-order-block-1.2.0.zip --clobber
+            gh release edit asbo-v1.2.0 --title 'All Star Bulk Order Block v1.2.0' --notes-file RELEASE-1.2.0.md
+          else
+            gh release create asbo-v1.2.0 all-star-bulk-order-block-1.2.0.zip \
+              --target main \
+              --title 'All Star Bulk Order Block v1.2.0' \
+              --notes-file RELEASE-1.2.0.md
+          fi
+
+      - name: Point WordPress updater to v1.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          p=Path('latest.json')
+          d=json.loads(p.read_text())
+          d['version']='1.2.0'
+          d['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.2.0/all-star-bulk-order-block-1.2.0.zip'
+          d['homepage']='https://github.com/All-Star-Embroidery/asbo-releases'
+          d['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          d['changelog']='<h4>1.2.0</h4><ul><li>Rebuilds WooCommerce My Account presentation into a responsive All Star customer experience while preserving native WooCommerce functionality.</li><li>Adds a dedicated Artwork hub, artwork status in Orders, and clearer order/artwork progression.</li><li>Redesigns customer and admin artwork review toward the approved Style-B card-based direction.</li><li>Hardens Approve Artwork and Request Changes persistence with save, cache clear, reload, and verification before reporting success.</li><li>No pricing, Supplier Sync, cart, shipping, checkout, or artwork-storage behavior changed.</li></ul>'
+          p.write_text(json.dumps(d,indent=2)+'\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest.json
+          git commit -m 'release: point updater to ASBO v1.2.0 Release asset'
+          git push
