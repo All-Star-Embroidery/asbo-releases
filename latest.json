@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.1.9",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.9/all-star-bulk-order-block-1.1.9.zip",
+  "version": "1.1.10",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.10/all-star-bulk-order-block-1.1.10.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-27 04:02:58 +0000",
+  "last_updated": "2026-08-27 05:09:21 +0000",
   "description": "All Star Embroidery Gutenberg bulk-order workflow with WooCommerce and ASE Supplier Sync compatibility.",
-  "changelog": "<h4>1.1.9</h4><ul><li>Upgrades the existing post-checkout artwork uploader into a complete customer/admin review workflow.</li><li>Adds Artwork Needed, Awaiting Review, Changes Requested, and Approved states.</li><li>Emails the team on new/revised artwork submissions and emails customers on approval or requested changes.</li><li>Adds a native WooCommerce ASBO Artwork Review panel with secure file preview/download, review history, and approval controls.</li><li>Reuses existing artwork order metadata so current uploads remain attached.</li><li>No pricing, Supplier Sync, cart, shipping, or checkout pricing behavior changed.</li></ul>"
+  "changelog": "<h4>1.1.10</h4><ul><li>Impeccable-style visual polish for the customer Artwork section and WooCommerce Artwork Review panel.</li><li>Merges All Star navy, muted warm gold, white, and quiet neutrals with cleaner hierarchy and fewer nested cards.</li><li>Improves file rows, timelines, status presentation, focus states, action hierarchy, and responsive stacking.</li><li>No artwork workflow, email, order-note, pricing, Supplier Sync, cart, shipping, or checkout logic changed.</li></ul>"
 }
