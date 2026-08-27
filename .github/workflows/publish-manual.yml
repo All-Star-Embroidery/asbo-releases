@@ -1,0 +1,109 @@
+name: Publish ASBO Release (Manual Only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "ASBO version to publish, e.g. 1.1.8"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release repository
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Resolve files
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
+
+          ZIP="all-star-bulk-order-block-${VERSION}.zip"
+          NOTES="RELEASE-${VERSION}.md"
+          TAG="asbo-v${VERSION}"
+
+          test -f "$ZIP"
+          test -f "$NOTES"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Validate WordPress ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.pkg.outputs.version }}"
+          ZIP="${{ steps.pkg.outputs.zip }}"
+
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
+          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q "Version: $VERSION"
+          unzip -p "$ZIP" all-star-bulk-order-block-v1.0.0/block/block.json | grep -q "\"version\": \"$VERSION\""
+
+          echo "Package size: $(stat -c%s "$ZIP") bytes"
+          sha256sum "$ZIP"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.pkg.outputs.version }}"
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          NOTES="${{ steps.pkg.outputs.notes }}"
+          TAG="${{ steps.pkg.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+            gh release edit "$TAG" \
+              --title "All Star Bulk Order Block v${VERSION}" \
+              --notes-file "$NOTES"
+          else
+            gh release create "$TAG" "$ZIP" \
+              --target main \
+              --title "All Star Bulk Order Block v${VERSION}" \
+              --notes-file "$NOTES"
+          fi
+
+      - name: Point WordPress updater at Release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.pkg.outputs.version }}"
+          python3 - <<PY
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          p = Path('latest.json')
+          data = json.loads(p.read_text())
+          data['version'] = '$VERSION'
+          data['download_url'] = (
+              'https://github.com/All-Star-Embroidery/asbo-releases/'
+              'releases/download/asbo-v$VERSION/'
+              'all-star-bulk-order-block-$VERSION.zip'
+          )
+          data['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          p.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest.json
+          git commit -m "release: point updater to ASBO $VERSION Release asset" || exit 0
+          git push
