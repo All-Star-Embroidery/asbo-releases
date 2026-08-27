@@ -1,0 +1,215 @@
+name: Publish ASBO 1.2.5 Customer Project Hub
+
+on:
+  push:
+    branches:
+      - account-redesign-v1.2.2
+    paths:
+      - '.seed-publish-v125-project-hub'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout account redesign branch
+        uses: actions/checkout@v5
+        with:
+          ref: account-redesign-v1.2.2
+          fetch-depth: 2
+
+      - name: Download production v1.2.4 base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-v124 /tmp/asbo-work
+          mkdir -p /tmp/asbo-v124 /tmp/asbo-work
+          gh release download v1.2.4 \
+            --repo All-Star-Embroidery/asbo-releases \
+            --pattern 'all-star-bulk-order-block-1.2.4.zip' \
+            --dir /tmp/asbo-v124
+          unzip -q /tmp/asbo-v124/all-star-bulk-order-block-1.2.4.zip -d /tmp/asbo-work
+          test -f /tmp/asbo-work/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
+
+      - name: Apply customer project hub dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          python3 staging/v1.2.5/apply_project_hub.py "$ROOT"
+
+      - name: Validate release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+
+          php -l "$ROOT/all-star-bulk-order-block.php"
+          php -l "$ROOT/includes/class-asbo-account-experience.php"
+          php -l "$ROOT/includes/class-asbo-artwork-review.php"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('/tmp/asbo-work/all-star-bulk-order-block-v1.0.0')
+          main = (root/'all-star-bulk-order-block.php').read_text()
+          account = (root/'includes'/'class-asbo-account-experience.php').read_text()
+          block = json.loads((root/'block'/'block.json').read_text())
+
+          assert 'Version: 1.2.5' in main
+          assert "private const VERSION = '1.2.5';" in main
+          assert block['version'] == '1.2.5'
+          assert "wp_register_style( 'asbo-account-experience', false, array(), '1.2.5' );" in account
+
+          # Preserve the v1.2.4 two-container account shell and mobile menu.
+          assert 'ASBO 1.2.4 TWO-CONTAINER ACCOUNT LAYOUT' in account
+          assert 'public static function render_account_sidebar' in account
+          assert "wc_get_template( 'myaccount/navigation.php' );" in account
+          assert 'asbo-account-menu-toggle' in account
+          assert 'grid-template-areas:"asbo-sidebar asbo-main"' in account
+
+          # Dashboard must now be a project hub, not duplicate navigation cards.
+          assert 'ASBO 1.2.5 CUSTOMER PROJECT HUB' in account
+          assert 'asbo-dashboard-project-hub' in account
+          assert 'asbo-project-attention' in account
+          assert 'asbo-current-project' in account
+          assert 'asbo-project-progress' in account
+          assert 'asbo-project-order-list' in account
+          assert 'asbo-next-project' in account
+
+          dashboard = account.split('public static function render_dashboard', 1)[1]
+          dashboard = dashboard.split('private static function quick_card', 1)[0]
+          assert 'asbo-account-quick-grid' not in dashboard
+          assert 'Orders currently' not in dashboard
+          assert "array( 'needed', 'changes_requested' )" in dashboard
+          assert "'awaiting_review'" in dashboard
+          assert "No action is needed right now." in dashboard
+          assert "get_page_by_path( 'bulk-order' )" in dashboard
+
+          # Scope guard: project hub patch must not modify pricing/supplier code.
+          assert 'unit_buy_price' not in dashboard
+          assert 'price_breaks' not in dashboard
+          PY
+
+          echo 'ASBO 1.2.5 project hub source validated.'
+
+      - name: Build installable ZIP and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f all-star-bulk-order-block-1.2.5.zip
+          (
+            cd /tmp/asbo-work
+            zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.5.zip" all-star-bulk-order-block-v1.0.0
+          )
+
+          unzip -t all-star-bulk-order-block-1.2.5.zip >/dev/null
+          unzip -l all-star-bulk-order-block-1.2.5.zip | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
+          unzip -p all-star-bulk-order-block-1.2.5.zip all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.5'
+
+          cat > RELEASE-1.2.5.md <<'EOF'
+          # All Star Bulk Order Block v1.2.5
+
+          Customer-project dashboard redesign for the All Star Embroidery WooCommerce My Account experience.
+
+          ## Dashboard is now a project hub
+          - Removes the redundant Orders / Artwork / Addresses / Account Details shortcut band from Dashboard.
+          - Keeps the personal **Welcome back** greeting as the page anchor.
+          - Adds **Needs Your Attention** only when a customer actually needs to act on Artwork Needed or Changes Requested. Awaiting Review stays quiet because no customer action is required.
+          - Adds one **Current Project** section with the active order, concise workflow status, Order Received → Artwork → Production → Ready progress, order date, item count, fulfillment method, and the appropriate order/artwork action.
+          - Keeps **Recent Orders** as the primary lower-dashboard utility without duplicating the active project.
+          - Adds a restrained **Ready for another project?** action using the Bulk Order page when present and WooCommerce Shop as a fallback.
+
+          ## UI/UX + brand direction
+          - Uses the existing Crafted Commerce design system: All Star Navy, Heritage Gold, Warm Cream, restrained production labels, modest corners, rules before shadows, and editorial hierarchy.
+          - No generic dashboard card grid or AI/SaaS-style navigation tiles.
+          - Project Hub sections have dedicated mobile reflow while the already-approved mobile Account menu remains unchanged.
+
+          ## Preserved behavior
+          - Builds directly from published v1.2.4, retaining the proven two-container account shell.
+          - No changes to Supplier Sync pricing, ASBO quantity tiers, cart totals, shipping, checkout, artwork storage/review persistence, authentication, order ownership/security, Orders, Artwork, Addresses, Account Details, or individual order-page behavior.
+          EOF
+
+          sha256sum all-star-bulk-order-block-1.2.5.zip
+          ls -lh all-star-bulk-order-block-1.2.5.zip
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.2.5 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload v1.2.5 all-star-bulk-order-block-1.2.5.zip --clobber --repo All-Star-Embroidery/asbo-releases
+            gh release edit v1.2.5 --repo All-Star-Embroidery/asbo-releases --title 'ASBO v1.2.5' --notes-file RELEASE-1.2.5.md
+          else
+            gh release create v1.2.5 all-star-bulk-order-block-1.2.5.zip \
+              --repo All-Star-Embroidery/asbo-releases \
+              --target account-redesign-v1.2.2 \
+              --title 'ASBO v1.2.5' \
+              --notes-file RELEASE-1.2.5.md
+          fi
+
+      - name: Update latest.json on main for WordPress
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API='repos/All-Star-Embroidery/asbo-releases/contents/latest.json'
+          SHA="$(gh api "$API?ref=main" --jq .sha)"
+          gh api "$API?ref=main" --jq .content | tr -d '\n' | base64 -d > /tmp/latest.json
+
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+
+          p='/tmp/latest.json'
+          with open(p) as f:
+              data=json.load(f)
+
+          data['version']='1.2.5'
+          data['download_url']='https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.5/all-star-bulk-order-block-1.2.5.zip'
+          data['last_updated']=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          data['changelog']=(
+              '<h4>1.2.5</h4><ul>'
+              '<li>Replaces the redundant My Account Dashboard shortcut band with a customer-focused Current Project hub.</li>'
+              '<li>Keeps the personal greeting, adds action-needed artwork alerts only when the customer must act, adds an active-order workflow, and retains Recent Orders.</li>'
+              '<li>Adds a restrained Start Another Project action and responsive project-hub layouts using the All Star navy/gold/cream Crafted Commerce system.</li>'
+              '<li>Retains the v1.2.4 two-container account shell and approved mobile Account menu.</li>'
+              '<li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork persistence/review, authentication, or order-security behavior changed.</li>'
+              '</ul>'
+          )
+
+          with open(p,'w') as f:
+              json.dump(data,f,indent=2)
+              f.write('\n')
+          PY
+
+          CONTENT="$(base64 -w0 /tmp/latest.json)"
+          gh api --method PUT "$API" \
+            -f message='release: point WordPress updater to ASBO v1.2.5' \
+            -f content="$CONTENT" \
+            -f sha="$SHA" \
+            -f branch='main' >/dev/null
+
+      - name: Verify release and WordPress updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view v1.2.5 --repo All-Star-Embroidery/asbo-releases --json tagName,assets --jq '.tagName, .assets[].name'
+
+          VERSION="$(gh api repos/All-Star-Embroidery/asbo-releases/contents/latest.json?ref=main --jq .content | tr -d '\n' | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          URL="$(gh api repos/All-Star-Embroidery/asbo-releases/contents/latest.json?ref=main --jq .content | tr -d '\n' | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["download_url"])')"
+
+          test "$VERSION" = '1.2.5'
+          test "$URL" = 'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.5/all-star-bulk-order-block-1.2.5.zip'
+          echo 'ASBO v1.2.5 is published and WordPress updater metadata is correct.'
