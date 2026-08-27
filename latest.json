@@ -2,7 +2,7 @@
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
   "version": "1.1.8",
-  "download_url": "https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/all-star-bulk-order-block-1.1.8.zip",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.8/all-star-bulk-order-block-1.1.8.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
