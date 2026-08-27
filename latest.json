@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.1.10",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.10/all-star-bulk-order-block-1.1.10.zip",
+  "version": "1.2.0",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.0/all-star-bulk-order-block-1.2.0.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-27 05:09:21 +0000",
-  "description": "All Star Embroidery Gutenberg bulk-order workflow with WooCommerce and ASE Supplier Sync compatibility.",
-  "changelog": "<h4>1.1.10</h4><ul><li>Impeccable-style visual polish for the customer Artwork section and WooCommerce Artwork Review panel.</li><li>Merges All Star navy, muted warm gold, white, and quiet neutrals with cleaner hierarchy and fewer nested cards.</li><li>Improves file rows, timelines, status presentation, focus states, action hierarchy, and responsive stacking.</li><li>No artwork workflow, email, order-note, pricing, Supplier Sync, cart, shipping, or checkout logic changed.</li></ul>"
+  "last_updated": "2026-08-27 10:21:07 +0000",
+  "description": "All Star Embroidery bulk ordering, artwork review, and WooCommerce My Account experience.",
+  "changelog": "<h4>1.2.0</h4><ul><li>Rebuilds WooCommerce My Account into a responsive All Star customer experience while preserving the native WooCommerce shortcode, endpoints, authentication, orders, addresses, payment methods, downloads, account settings, and third-party account links.</li><li>Adds a dedicated Artwork hub with Artwork Needed, Awaiting Review, Changes Requested, and Approved states, plus artwork status and direct artwork actions in Orders.</li><li>Redesigns customer order artwork and the WooCommerce admin Artwork Review panel in the Style-B card-based direction with All Star navy, restrained warm gold, clearer hierarchy, file cards, review timeline, and responsive layouts.</li><li>Hardens Approve Artwork and Request Changes persistence by saving order meta, saving the WooCommerce order, clearing caches, reloading, and verifying the stored status before reporting success or emailing the customer.</li><li>No Supplier Sync pricing, WooCommerce Regular Price rules, ASBO bulk-discount tiers, cart pricing, savings, shipping, checkout, artwork file storage, or automatic stitch-count charging changed.</li></ul>"
 }
