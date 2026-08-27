@@ -50,7 +50,7 @@ jobs:
           test -f "$PLUGIN/all-star-bulk-order-block.php"
 
           cd "$PLUGIN"
-          patch --dry-run -p1 < "$PATCH" >/dev/null
+          patch --dry-run -p1 < "$PATCH"
           patch -p1 < "$PATCH"
 
           php -l "$PLUGIN/all-star-bulk-order-block.php"
