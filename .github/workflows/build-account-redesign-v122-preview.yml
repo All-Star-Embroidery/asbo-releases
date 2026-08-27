@@ -5,7 +5,8 @@ on:
     branches:
       - account-redesign-v1.2.2
     paths:
-      - .seed-account-redesign-v122-preview
+      - '.seed-account-redesign-v122-preview*'
+      - 'staging/v1.2.2-preview/**'
 
 permissions:
   contents: write
@@ -40,18 +41,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 staging/v1.2.2-preview/apply_preview.py /tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+          python3 staging/v1.2.2-preview/apply_preview.py "$ROOT"
+          python3 staging/v1.2.2-preview/apply_refinement.py "$ROOT"
 
       - name: Validate patched plugin
         shell: bash
         run: |
           set -euo pipefail
           ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
-
           php -l "$ROOT/all-star-bulk-order-block.php"
           php -l "$ROOT/includes/class-asbo-account-experience.php"
           php -l "$ROOT/includes/class-asbo-artwork-review.php"
-
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -60,13 +61,13 @@ jobs:
           assert data['version'] == '1.2.2', data['version']
           account = (root/'includes'/'class-asbo-account-experience.php').read_text()
           assert 'ASBO 1.2.2 BRAND SYSTEM' in account
-          assert 'asbo-account-menu-toggle' in account
+          assert 'ASBO 1.2.2 tablet refinement' in account
+          assert 'asbo-artwork-has-attention' in account
+          assert 'asbo-account-quick-card__notice' in account
           main = (root/'all-star-bulk-order-block.php').read_text()
           assert 'Version: 1.2.2' in main
           assert "private const VERSION = '1.2.2';" in main
           PY
-
-          grep -R "100vw - 24px" "$ROOT/includes/class-asbo-account-experience.php" >/dev/null || true
           echo 'Validation passed.'
 
       - name: Build preview ZIP and release notes
@@ -78,7 +79,6 @@ jobs:
             cd /tmp/asbo-work
             zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.2.zip" all-star-bulk-order-block-v1.0.0
           )
-
           unzip -t all-star-bulk-order-block-1.2.2.zip >/dev/null
           unzip -l all-star-bulk-order-block-1.2.2.zip | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
           unzip -p all-star-bulk-order-block-1.2.2.zip all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.2'
@@ -89,31 +89,23 @@ jobs:
           Brand-system and responsive redesign of the WooCommerce My Account + Artwork experience.
 
           ## Crafted Commerce design system
-
-          - Uses the 2026 All Star Embroidery palette: `#080F1F` navy, `#D2A952` Heritage Gold, `#F3EEE7` Warm Cream, white, Steel Gray, and Utility Red.
-          - Uses Inter for functional UI and Roboto Slab for selected editorial headings when those brand fonts are available on the site.
-          - Replaces the previous HeroUI/SaaS visual language with a flatter production/editorial system: rules, records, restrained rectangular statuses, and deliberate whitespace.
-          - Removes unnecessary floating cards, soft pill overload, heavy radius, and decorative shadows.
+          - Uses the 2026 All Star Embroidery navy, Heritage Gold, Warm Cream, white, Steel Gray, and Utility Red system.
+          - Replaces the previous HeroUI/SaaS visual language with production records, editorial rules, restrained labels, and deliberate whitespace.
+          - Removes unnecessary floating cards, pill overload, heavy radius, and decorative shadows.
 
           ## Responsive account shell
+          - Mobile uses a real Account menu disclosure rather than a horizontal tab strip.
+          - Tablet gets a dedicated two-column rail + content layout.
+          - Fixes the dashboard-only split rail by explicitly sizing the identity/navigation grid rows so the navy sidebar stays continuous on Dashboard, Orders, Artwork, and the other endpoints.
+          - Mobile touch targets remain 44px+ and form fields 48px.
 
-          - Removes the old viewport-breakout `100vw` / translate sizing pattern from My Account.
-          - Mobile uses a compact navy customer identity bar plus a real **Account menu** disclosure instead of a horizontally scrolling tab strip.
-          - Tablet gets a dedicated two-column account rail + content layout rather than an enlarged phone layout.
-          - Desktop keeps a wider navy navigation rail and fluid content area without over-stretching text.
-          - Mobile touch targets are at least 44px, form fields are 48px, long emails/filenames/order content can wrap, and mobile tables reflow into readable records.
-          - Includes `prefers-reduced-motion` handling.
-
-          ## Artwork
-
-          - Artwork hub rows now read like production tickets rather than app cards.
-          - Artwork Needed, Awaiting Review, Changes Requested, and Approved use restrained rectangular production labels.
-          - Approved uses All Star navy rather than generic success green; Changes Requested reserves Utility Red for action-required states.
-          - Customer artwork inside an order is visually integrated into the order page with a gold production rule rather than a detached floating widget.
+          ## Dashboard actions + artwork attention
+          - Replaces the oversized 2x2 shortcut blocks with a tighter two-column account-action ledger on tablet/desktop and a compact one-column list on mobile.
+          - Artwork navigation receives a small gold attention indicator whenever active artwork exists.
+          - The Artwork dashboard shortcut carries the same attention indicator.
 
           ## Preserved functionality
-
-          This preview does not change Supplier Sync pricing, supplier cost fields, WooCommerce Regular Price rules, ASBO bulk tiers, cart totals, shipping, checkout, artwork file storage, artwork review persistence/AJAX, order ownership/security, or customer authentication/endpoints.
+          No Supplier Sync pricing, supplier cost fields, WooCommerce Regular Price rules, ASBO bulk tiers, cart totals, shipping, checkout, artwork storage/review persistence, order ownership/security, or customer authentication/endpoints changed.
           EOF
 
           sha256sum all-star-bulk-order-block-1.2.2.zip
@@ -134,5 +126,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add all-star-bulk-order-block-1.2.2.zip RELEASE-1.2.2.md
-          git commit -m 'preview: build ASBO 1.2.2 account redesign' || exit 0
+          git commit -m 'preview: rebuild ASBO 1.2.2 account refinements' || exit 0
           git push origin HEAD:account-redesign-v1.2.2
