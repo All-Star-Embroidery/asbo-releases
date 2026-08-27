@@ -29,15 +29,26 @@ jobs:
           BUILD='/tmp/asbo120'
           PLUGIN="$BUILD/all-star-bulk-order-block-v1.0.0"
           PATCH='/tmp/asbo-v1.2.0.patch'
+          NONART='/tmp/asbo-v1.2.0-nonart.patch'
           ZIP="$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.0.zip"
 
           test -f 'RELEASE-1.2.0.md'
           test -f 'staging/v1.2.0/part00'
           test -f 'staging/v1.2.0/part11'
+          test -f 'staging/v1.2.0/artwork-b64-00'
+          test -f 'staging/v1.2.0/artwork-b64-02'
 
           cat staging/v1.2.0/part* > "$PATCH"
           echo '8a4386174859adc18d0e624f413cd645a72d9d212c77a5f70c960fef2dc4dd2b  /tmp/asbo-v1.2.0.patch' | sha256sum -c -
-          test "$(stat -c%s "$PATCH")" -eq 77288
+
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('/tmp/asbo-v1.2.0.patch').read_text()
+          marker = 'diff --git a/includes/class-asbo-artwork-review.php'
+          if marker not in src:
+              raise SystemExit('artwork patch marker missing')
+          Path('/tmp/asbo-v1.2.0-nonart.patch').write_text(src.split(marker, 1)[0])
+          PY
 
           curl -fL --retry 3 \
             'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.1.10/all-star-bulk-order-block-1.1.10.zip' \
@@ -50,8 +61,12 @@ jobs:
           test -f "$PLUGIN/all-star-bulk-order-block.php"
 
           cd "$PLUGIN"
-          patch --dry-run -p1 < "$PATCH"
-          patch -p1 < "$PATCH"
+          patch --dry-run -p1 < "$NONART"
+          patch -p1 < "$NONART"
+
+          cd "$GITHUB_WORKSPACE"
+          cat staging/v1.2.0/artwork-b64-* | base64 -d | gzip -dc > "$PLUGIN/includes/class-asbo-artwork-review.php"
+          echo 'f0ad9775492036135404c79ef3da07b0dffcca942ba3e159d767445bb591cc46  /tmp/asbo120/all-star-bulk-order-block-v1.0.0/includes/class-asbo-artwork-review.php' | sha256sum -c -
 
           php -l "$PLUGIN/all-star-bulk-order-block.php"
           php -l "$PLUGIN/includes/class-asbo-artwork-review.php"
@@ -75,6 +90,7 @@ jobs:
           grep -q 'ASBO_Account_Experience::boot();' "$PLUGIN/all-star-bulk-order-block.php"
           grep -q 'persist_artwork_status' "$PLUGIN/includes/class-asbo-artwork-review.php"
           grep -q "add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint'" "$PLUGIN/includes/class-asbo-account-experience.php"
+          grep -q 'id="asbo-artwork"' "$PLUGIN/includes/class-asbo-artwork-review.php"
 
           rm -f "$ZIP"
           cd "$BUILD"
