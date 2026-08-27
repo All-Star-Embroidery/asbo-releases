@@ -10,7 +10,7 @@ Brand-system and responsive redesign of the WooCommerce My Account + Artwork exp
 ## Responsive account shell
 - Mobile uses a real Account menu disclosure rather than a horizontal tab strip.
 - Tablet gets a dedicated two-column rail + content layout.
-- Fixes the dashboard-only split rail by explicitly sizing the identity/navigation grid rows so the navy sidebar stays continuous on Dashboard, Orders, Artwork, and the other endpoints.
+- Fixes the large gap between the customer identity panel and account navigation on long Dashboard and View Order pages by wrapping both pieces in one structural sidebar grid item. Tall account content can no longer stretch a grid track between them.
 - Mobile touch targets remain 44px+ and form fields 48px.
 
 ## Dashboard actions + artwork attention
