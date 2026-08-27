@@ -1,13 +1,13 @@
 {
   "name": "All Star Bulk Order Block",
   "slug": "all-star-bulk-order-block",
-  "version": "1.2.3",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.3/all-star-bulk-order-block-1.2.3.zip",
+  "version": "1.2.4",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.2.4/all-star-bulk-order-block-1.2.4.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases",
   "requires": "6.5",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-08-27 14:42:24 +0000",
+  "last_updated": "2026-08-27 14:59:28 +0000",
   "description": "All Star Embroidery bulk ordering, artwork review, and WooCommerce My Account experience.",
-  "changelog": "<h4>1.2.3</h4><ul><li>Fixes the desktop/tablet My Account sidebar disconnect on Dashboard, Account Details, and long individual order pages by making customer identity and WooCommerce navigation one continuous navy rail.</li><li>Restyles Orders, Artwork, Addresses, and Account Details dashboard shortcuts as compact editorial quick links instead of boxed/table-like buttons.</li><li>Retains the approved mobile Account menu without changing its layout or interaction.</li><li>Preserves artwork attention indicators and the All Star navy/gold/cream Crafted Commerce design system.</li><li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork storage/review, authentication, or order-security behavior changed.</li></ul>"
+  "changelog": "<h4>1.2.4</h4><ul><li>Rebuilds the desktop/tablet My Account shell as exactly two sibling containers: one continuous navy account sidebar and one WooCommerce content area.</li><li>Fixes Dashboard, Account Details, and individual order pages being nested into or squeezed to the sidebar width.</li><li>Replaces the four rectangular Dashboard shortcut blocks with an unboxed editorial quick-access band.</li><li>Keeps the approved mobile Account menu unchanged and preserves Artwork attention indicators plus the All Star navy/gold/cream design system.</li><li>No Supplier Sync pricing, ASBO tiers, cart, shipping, checkout, artwork storage/review, authentication, or order-security behavior changed.</li></ul>"
 }
