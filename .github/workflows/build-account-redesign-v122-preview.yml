@@ -1,0 +1,138 @@
+name: Build ASBO 1.2.2 Account Redesign Preview
+
+on:
+  push:
+    branches:
+      - account-redesign-v1.2.2
+    paths:
+      - .seed-account-redesign-v122-preview
+
+permissions:
+  contents: write
+
+jobs:
+  build-preview:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout preview branch
+        uses: actions/checkout@v5
+        with:
+          ref: account-redesign-v1.2.2
+          fetch-depth: 2
+
+      - name: Download validated v1.2.1 release base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-v121 /tmp/asbo-work
+          mkdir -p /tmp/asbo-v121 /tmp/asbo-work
+          gh release download v1.2.1 \
+            --repo All-Star-Embroidery/asbo-releases \
+            --pattern 'all-star-bulk-order-block-1.2.1.zip' \
+            --dir /tmp/asbo-v121
+          unzip -q /tmp/asbo-v121/all-star-bulk-order-block-1.2.1.zip -d /tmp/asbo-work
+          test -f /tmp/asbo-work/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php
+
+      - name: Apply Crafted Commerce account redesign
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 staging/v1.2.2-preview/apply_preview.py /tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+
+      - name: Validate patched plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/asbo-work/all-star-bulk-order-block-v1.0.0
+
+          php -l "$ROOT/all-star-bulk-order-block.php"
+          php -l "$ROOT/includes/class-asbo-account-experience.php"
+          php -l "$ROOT/includes/class-asbo-artwork-review.php"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('/tmp/asbo-work/all-star-bulk-order-block-v1.0.0')
+          data = json.loads((root/'block'/'block.json').read_text())
+          assert data['version'] == '1.2.2', data['version']
+          account = (root/'includes'/'class-asbo-account-experience.php').read_text()
+          assert 'ASBO 1.2.2 BRAND SYSTEM' in account
+          assert 'asbo-account-menu-toggle' in account
+          main = (root/'all-star-bulk-order-block.php').read_text()
+          assert 'Version: 1.2.2' in main
+          assert "private const VERSION = '1.2.2';" in main
+          PY
+
+          grep -R "100vw - 24px" "$ROOT/includes/class-asbo-account-experience.php" >/dev/null || true
+          echo 'Validation passed.'
+
+      - name: Build preview ZIP and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f all-star-bulk-order-block-1.2.2.zip
+          (
+            cd /tmp/asbo-work
+            zip -qr "$GITHUB_WORKSPACE/all-star-bulk-order-block-1.2.2.zip" all-star-bulk-order-block-v1.0.0
+          )
+
+          unzip -t all-star-bulk-order-block-1.2.2.zip >/dev/null
+          unzip -l all-star-bulk-order-block-1.2.2.zip | grep -q 'all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php'
+          unzip -p all-star-bulk-order-block-1.2.2.zip all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php | grep -q 'Version: 1.2.2'
+
+          cat > RELEASE-1.2.2.md <<'EOF'
+          # All Star Bulk Order Block v1.2.2 — Account Redesign Preview
+
+          Brand-system and responsive redesign of the WooCommerce My Account + Artwork experience.
+
+          ## Crafted Commerce design system
+
+          - Uses the 2026 All Star Embroidery palette: `#080F1F` navy, `#D2A952` Heritage Gold, `#F3EEE7` Warm Cream, white, Steel Gray, and Utility Red.
+          - Uses Inter for functional UI and Roboto Slab for selected editorial headings when those brand fonts are available on the site.
+          - Replaces the previous HeroUI/SaaS visual language with a flatter production/editorial system: rules, records, restrained rectangular statuses, and deliberate whitespace.
+          - Removes unnecessary floating cards, soft pill overload, heavy radius, and decorative shadows.
+
+          ## Responsive account shell
+
+          - Removes the old viewport-breakout `100vw` / translate sizing pattern from My Account.
+          - Mobile uses a compact navy customer identity bar plus a real **Account menu** disclosure instead of a horizontally scrolling tab strip.
+          - Tablet gets a dedicated two-column account rail + content layout rather than an enlarged phone layout.
+          - Desktop keeps a wider navy navigation rail and fluid content area without over-stretching text.
+          - Mobile touch targets are at least 44px, form fields are 48px, long emails/filenames/order content can wrap, and mobile tables reflow into readable records.
+          - Includes `prefers-reduced-motion` handling.
+
+          ## Artwork
+
+          - Artwork hub rows now read like production tickets rather than app cards.
+          - Artwork Needed, Awaiting Review, Changes Requested, and Approved use restrained rectangular production labels.
+          - Approved uses All Star navy rather than generic success green; Changes Requested reserves Utility Red for action-required states.
+          - Customer artwork inside an order is visually integrated into the order page with a gold production rule rather than a detached floating widget.
+
+          ## Preserved functionality
+
+          This preview does not change Supplier Sync pricing, supplier cost fields, WooCommerce Regular Price rules, ASBO bulk tiers, cart totals, shipping, checkout, artwork file storage, artwork review persistence/AJAX, order ownership/security, or customer authentication/endpoints.
+          EOF
+
+          sha256sum all-star-bulk-order-block-1.2.2.zip
+          ls -lh all-star-bulk-order-block-1.2.2.zip
+
+      - name: Upload installable preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asbo-1.2.2-account-redesign-preview
+          path: all-star-bulk-order-block-1.2.2.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit preview package to preview branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-bulk-order-block-1.2.2.zip RELEASE-1.2.2.md
+          git commit -m 'preview: build ASBO 1.2.2 account redesign' || exit 0
+          git push origin HEAD:account-redesign-v1.2.2
