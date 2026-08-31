@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ASBO Labs
  * Description: Private beta workspace for the next All Star Bulk Order experience. Reads WooCommerce catalog data but does not write carts or orders.
- * Version: 1.3.0-beta.1
+ * Version: 1.3.0-beta.2
  * Author: All Star Embroidery
  * Requires at least: 6.5
  * Requires PHP: 7.4
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class ASBO_Labs {
-    public const VERSION = '1.3.0-beta.1';
+    public const VERSION = '1.3.0-beta.2';
     private const REST_NS = 'asbo-labs/v1';
     private const BETA_FEED = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/asbo-labs/beta.json';
 
@@ -73,6 +73,12 @@ final class ASBO_Labs {
             array(),
             self::VERSION
         );
+        wp_enqueue_style(
+            'asbo-labs-beta2',
+            plugins_url( 'assets/labs-beta2.css', __FILE__ ),
+            array( 'asbo-labs' ),
+            self::VERSION
+        );
         wp_enqueue_script(
             'asbo-labs',
             plugins_url( 'assets/labs.js', __FILE__ ),
@@ -90,7 +96,7 @@ final class ASBO_Labs {
             'currencySymbol'     => get_woocommerce_currency_symbol(),
             'currencyCode'       => get_woocommerce_currency(),
             'productionDetected' => shortcode_exists( 'asbo_bulk_order' ),
-            'phase'              => 'ux-sandbox',
+            'phase'              => 'ux-sandbox-2',
         );
 
         wp_add_inline_script(
