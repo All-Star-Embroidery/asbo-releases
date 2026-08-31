@@ -6,6 +6,7 @@
     if (!root) return;
 
     var STORAGE = 'asboLabsProjectV130';
+    var INTRO_KEY = 'asboLabsIntroSeen';
     var state = {
         step: 1,
         products: [],
@@ -24,7 +25,8 @@
         },
         loading: true,
         error: '',
-        onboarding: sessionStorage.getItem('asboLabsIntroSeen') !== '1'
+        onboarding: sessionStorage.getItem(INTRO_KEY) !== '1',
+        toast: ''
     };
 
     restore();
@@ -36,12 +38,19 @@
             if (saved.artwork && typeof saved.artwork === 'object') {
                 state.artwork = Object.assign(state.artwork, saved.artwork);
             }
+            if (saved.step && Number(saved.step) >= 1 && Number(saved.step) <= 3) {
+                state.step = Number(saved.step);
+            }
         } catch (e) {}
     }
 
     function persist() {
         try {
-            localStorage.setItem(STORAGE, JSON.stringify({ items: state.items, artwork: state.artwork }));
+            localStorage.setItem(STORAGE, JSON.stringify({
+                step: state.step,
+                items: state.items,
+                artwork: state.artwork
+            }));
         } catch (e) {}
     }
 
@@ -73,6 +82,11 @@
         }
     }
 
+    function capitalize(value) {
+        value = String(value || '');
+        return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
     function totalPieces() {
         return state.items.reduce(function (sum, item) { return sum + Number(item.qty || 0); }, 0);
     }
@@ -87,13 +101,25 @@
         }, 0);
     }
 
-    function activeTotal() {
-        if (!state.active) return 0;
+    function priceMap() {
         var map = {};
+        if (!state.active) return map;
         (state.active.variations || []).forEach(function (v) { map[String(v.id)] = Number(v.price || 0); });
+        return map;
+    }
+
+    function activeTotal() {
+        var map = priceMap();
         return Object.keys(state.quantities).reduce(function (sum, id) {
             return sum + (Number(state.quantities[id] || 0) * Number(map[String(id)] || 0));
         }, 0);
+    }
+
+    function itemForProduct(id) {
+        for (var i = 0; i < state.items.length; i++) {
+            if (Number(state.items[i].productId) === Number(id)) return state.items[i];
+        }
+        return null;
     }
 
     function loadProducts() {
@@ -104,8 +130,12 @@
         api('/products' + query).then(function (data) {
             state.products = data.products || [];
             state.loading = false;
-            if (state.products.length && !state.activeId) selectProduct(state.products[0].id, false);
-            else render();
+            if (state.products.length && !state.activeId) {
+                var preferred = state.items.length ? state.items[0].productId : state.products[0].id;
+                selectProduct(preferred, false);
+            } else {
+                render();
+            }
         }).catch(function (err) {
             state.loading = false;
             state.error = err.message || 'Could not load products.';
@@ -122,7 +152,7 @@
         render();
         api('/product/' + encodeURIComponent(id)).then(function (data) {
             state.active = data;
-            buildDefaultChoices();
+            restoreActiveConfiguration();
             render();
             if (focusBuilder && window.innerWidth < 760) {
                 var builder = root.querySelector('.asbo-labs-configurator');
@@ -131,6 +161,23 @@
         }).catch(function (err) {
             state.error = err.message || 'Could not load product.';
             render();
+        });
+    }
+
+    function restoreActiveConfiguration() {
+        buildDefaultChoices();
+        var existing = itemForProduct(state.activeId);
+        if (!existing) return;
+        state.decoration = existing.decoration || 'embroidery';
+        (existing.breakdown || []).forEach(function (row) {
+            var id = String(row.variationId || '');
+            if (!id) return;
+            state.quantities[id] = Number(row.qty || 0);
+            var match = (state.active.variations || []).filter(function (v) { return String(v.id) === id; })[0];
+            if (match) {
+                var groupKey = colorOf(match).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                state.variantChoice[groupKey] = id;
+            }
         });
     }
 
@@ -181,13 +228,15 @@
         root.innerHTML = shell();
         bindFileInput();
         scheduleOnboarding();
+        scheduleToast();
     }
 
     function shell() {
         return '<div class="asbo-labs-app">' +
-            '<div class="asbo-labs-beta-bar"><strong>ASBO LABS</strong><span>Private beta · UX sandbox · no cart/order writes</span><span class="asbo-labs-beta-status">' + (cfg.productionDetected ? 'Production ASBO detected' : 'Production ASBO not detected') + '</span></div>' +
+            '<div class="asbo-labs-beta-bar"><strong>ASBO LABS</strong><span>Private beta · interaction sandbox · no cart/order writes</span><span class="asbo-labs-beta-status">' + (cfg.productionDetected ? 'Production ASBO detected' : 'Production ASBO not detected') + '</span></div>' +
             topbar() +
             onboarding() +
+            (state.toast ? '<div class="asbo-labs-toast" role="status">' + esc(state.toast) + '</div>' : '') +
             '<main class="asbo-labs-stage">' + (state.step === 1 ? itemsStep() : state.step === 2 ? artworkStep() : checkoutStep()) + '</main>' +
             projectFooter() +
         '</div>';
@@ -205,7 +254,7 @@
                 var cls = s.n === state.step ? ' is-current' : s.n < state.step ? ' is-complete' : '';
                 return '<button type="button" data-action="step" data-step="' + s.n + '" class="asbo-labs-step' + cls + '"><span>' + (s.n < state.step ? '✓' : s.n) + '</span>' + esc(s.label) + '</button>';
             }).join('<i></i>') + '</nav>' +
-            '<button type="button" class="asbo-labs-save" data-action="save">Save beta draft</button>' +
+            '<div class="asbo-labs-top-actions"><button type="button" class="asbo-labs-how" data-action="show-intro">How it works</button><button type="button" class="asbo-labs-save" data-action="save">Save beta draft</button></div>' +
         '</div>';
     }
 
@@ -221,26 +270,32 @@
     function itemsStep() {
         if (state.loading) return '<div class="asbo-labs-loading">Loading your WooCommerce catalog…</div>';
         if (state.error) return '<div class="asbo-labs-error">' + esc(state.error) + '</div>';
-
         return '<div class="asbo-labs-workspace">' + productLibrary() + configurator() + '</div>';
     }
 
     function productLibrary() {
         var rows = state.products.map(function (p) {
             var active = Number(p.id) === Number(state.activeId);
-            return '<button type="button" class="asbo-labs-product-row' + (active ? ' is-active' : '') + '" data-action="select-product" data-id="' + p.id + '">' +
+            var item = itemForProduct(p.id);
+            return '<button type="button" class="asbo-labs-product-row' + (active ? ' is-active' : '') + (item ? ' is-in-project' : '') + '" data-action="select-product" data-id="' + p.id + '">' +
                 '<img src="' + esc(p.image) + '" alt="">' +
                 '<span class="asbo-labs-product-copy"><strong>' + esc(p.name) + '</strong><small>' + esc((p.categories || [])[0] || 'Product') + ' · Starting at ' + money(p.startingPrice) + '</small></span>' +
-                '<span class="asbo-labs-product-side"><small>' + (itemForProduct(p.id) ? itemForProduct(p.id).qty + ' selected' : '0 selected') + '</small><b>' + (itemForProduct(p.id) ? money(itemForProduct(p.id).total) : money(0)) + '</b><em>›</em></span>' +
+                '<span class="asbo-labs-product-side"><small>' + (item ? item.qty + ' selected' : '0 selected') + '</small><b>' + (item ? money(item.total) : money(0)) + '</b><em>›</em></span>' +
             '</button>';
         }).join('');
 
         return '<section class="asbo-labs-library">' +
-            '<div class="asbo-labs-library-head"><div><span class="asbo-labs-eyebrow">Items</span><h2>Choose your headwear</h2><p>Select a style, then configure it without leaving the workspace.</p></div></div>' +
+            '<div class="asbo-labs-library-head"><div><span class="asbo-labs-eyebrow">Items</span><h2>Choose your headwear</h2><p>Pick a style, configure it on the right, then keep adding styles without leaving this screen.</p></div></div>' +
+            projectMiniSummary() +
             '<div class="asbo-labs-library-tools"><label><span class="screen-reader-text">Search products</span><input type="search" placeholder="Search styles…" data-action="search"></label><span>' + state.products.length + ' styles loaded</span></div>' +
             '<div class="asbo-labs-product-list">' + rows + '</div>' +
             '<div class="asbo-labs-help"><div><strong>Need help choosing?</strong><span>We can help pick the right style and decoration.</span></div><a href="mailto:AllStarEmb@windstream.net">Ask All Star</a></div>' +
         '</section>';
+    }
+
+    function projectMiniSummary() {
+        if (!state.items.length) return '';
+        return '<div class="asbo-labs-mini-summary"><span><b>' + state.items.length + '</b> ' + (state.items.length === 1 ? 'style' : 'styles') + ' in project</span><span><b>' + totalPieces() + '</b> pieces</span><button type="button" data-action="step" data-step="2">Artwork next →</button></div>';
     }
 
     function configurator() {
@@ -253,13 +308,13 @@
 
         return '<section class="asbo-labs-configurator">' +
             '<button type="button" class="asbo-labs-mobile-back" data-action="mobile-back">← Back to styles</button>' +
-            '<div class="asbo-labs-product-hero"><div class="asbo-labs-product-hero-copy"><img src="' + esc(state.active.image) + '" alt=""><div><span class="asbo-labs-eyebrow">Configuring</span><h2>' + esc(state.active.name) + '</h2><p>Starting at <strong>' + money(state.active.startingPrice) + '</strong></p></div></div><div class="asbo-labs-pricing-quick"><small>Pricing quick view</small><strong>' + money(state.active.startingPrice) + '</strong><span>Base regular price</span><button type="button" data-action="pricing-info">About beta pricing</button></div></div>' +
+            '<div class="asbo-labs-product-hero"><div class="asbo-labs-product-hero-copy"><img src="' + esc(state.active.image) + '" alt=""><div><span class="asbo-labs-eyebrow">' + (existing ? 'Editing project item' : 'Configuring') + '</span><h2>' + esc(state.active.name) + '</h2><p>Starting at <strong>' + money(state.active.startingPrice) + '</strong></p></div></div><div class="asbo-labs-pricing-quick"><small>Pricing quick view</small><strong>' + money(state.active.startingPrice) + '</strong><span>WooCommerce regular price</span><button type="button" data-action="pricing-info">About beta pricing</button></div></div>' +
             '<div class="asbo-labs-config-body">' +
                 '<section class="asbo-labs-task"><div class="asbo-labs-task-title"><span>1</span><div><h3>Decoration method</h3><p>Choose how you’d like us to decorate this product.</p></div></div><div class="asbo-labs-decoration"><button type="button" data-action="decoration" data-value="embroidery" class="' + (state.decoration === 'embroidery' ? 'is-selected' : '') + '"><b>Embroidery</b><small>Best for most logos</small></button><button type="button" data-action="decoration" data-value="patch" class="' + (state.decoration === 'patch' ? 'is-selected' : '') + '"><b>Patch</b><small>Bold sewn-on finish</small></button></div></section>' +
-                '<section class="asbo-labs-task"><div class="asbo-labs-task-title"><span>2</span><div><h3>Split quantities by color</h3><p>Pick colors and quantities. The live production tier engine will be wired after UX approval.</p></div></div><div class="asbo-labs-color-grid">' + cards + '</div>' + (groups.length > 8 ? '<button type="button" class="asbo-labs-more" data-action="toggle-colors">' + (state.showAllColors ? 'Show fewer colors' : 'Show more colors (' + (groups.length - 8) + ')') + '</button>' : '') + '</section>' +
+                '<section class="asbo-labs-task"><div class="asbo-labs-task-title"><span>2</span><div><h3>Split quantities by color</h3><p>Type a quantity or use the controls. Saved project items reopen exactly where you left them.</p></div></div><div class="asbo-labs-color-grid">' + cards + '</div>' + (groups.length > 8 ? '<button type="button" class="asbo-labs-more" data-action="toggle-colors">' + (state.showAllColors ? 'Show fewer colors' : 'Show more colors (' + (groups.length - 8) + ')') + '</button>' : '') + '</section>' +
                 '<div class="asbo-labs-totals"><div><small>Total pieces</small><strong>' + activeQty() + '</strong></div><div><small>UX sandbox estimate</small><strong>' + money(activeTotal()) + '</strong></div></div>' +
             '</div>' +
-            '<div class="asbo-labs-config-actions"><button type="button" class="asbo-labs-primary-navy" data-action="add-order"' + (activeQty() < 1 ? ' disabled' : '') + '>' + (existing ? 'Update order' : 'Add to order') + '</button><button type="button" class="asbo-labs-secondary" data-action="save">Save for later</button></div>' +
+            '<div class="asbo-labs-config-actions"><button type="button" class="asbo-labs-primary-navy" data-action="add-order"' + (activeQty() < 1 ? ' disabled' : '') + '>' + (existing ? 'Update project item' : 'Add to project') + '</button>' + (existing ? '<button type="button" class="asbo-labs-danger-link" data-action="remove-order" data-id="' + state.active.id + '">Remove</button>' : '<button type="button" class="asbo-labs-secondary" data-action="save">Save for later</button>') + '</div>' +
         '</section>';
     }
 
@@ -274,18 +329,13 @@
         return '<article class="asbo-labs-color-card' + (qty > 0 ? ' has-qty' : '') + '">' +
             '<img src="' + esc(v.image || group.image) + '" alt="">' +
             '<strong>' + esc(group.name) + '</strong>' + sizeOptions +
-            '<div class="asbo-labs-stepper"><button type="button" data-action="qty" data-delta="-1" data-id="' + v.id + '">−</button><b>' + qty + '</b><button type="button" data-action="qty" data-delta="1" data-id="' + v.id + '">+</button></div>' +
+            '<div class="asbo-labs-stepper"><button type="button" data-action="qty" data-delta="-1" data-id="' + v.id + '" aria-label="Decrease quantity">−</button><input type="number" inputmode="numeric" min="0" max="9999" value="' + qty + '" data-action="qty-input" data-id="' + v.id + '" aria-label="Quantity for ' + esc(group.name) + '"><button type="button" data-action="qty" data-delta="1" data-id="' + v.id + '" aria-label="Increase quantity">+</button></div>' +
+            '<div class="asbo-labs-quick-qty"><button type="button" data-action="qty-add" data-delta="6" data-id="' + v.id + '">+6</button><button type="button" data-action="qty-add" data-delta="12" data-id="' + v.id + '">+12</button></div>' +
             '<div class="asbo-labs-line-price"><span>' + money(v.price) + ' ea</span><b>' + money(qty * Number(v.price || 0)) + '</b></div>' +
         '</article>';
     }
 
-    function itemForProduct(id) {
-        for (var i = 0; i < state.items.length; i++) if (Number(state.items[i].productId) === Number(id)) return state.items[i];
-        return null;
-    }
-
     function artworkStep() {
-        var itemSummary = orderSummaryRail();
         var sources = [
             ['upload', 'Upload a new file', 'Fastest option'],
             ['library', 'Use artwork already on file', 'Choose from a prior order later'],
@@ -297,43 +347,38 @@
 
         return '<div class="asbo-labs-artwork-layout">' +
             '<section class="asbo-labs-artwork-main">' +
-                '<header class="asbo-labs-artwork-head"><span class="asbo-labs-eyebrow">Artwork</span><h2>Upload artwork & <em>production details.</em></h2><p>Tell us where the logo goes and anything production should know.</p></header>' +
+                '<header class="asbo-labs-artwork-head"><span class="asbo-labs-eyebrow">Artwork</span><h2>Artwork & <em>production details.</em></h2><p>Three quick choices. We’ll handle the production review after checkout.</p></header>' +
                 '<section class="asbo-labs-art-group"><h3>1. How will you provide your logo?</h3><div class="asbo-labs-source-grid">' + sources.map(function (s) {
                     return '<button type="button" data-action="art-source" data-value="' + s[0] + '" class="' + (state.artwork.source === s[0] ? 'is-selected' : '') + '"><b>' + esc(s[1]) + '</b><small>' + esc(s[2]) + '</small></button>';
-                }).join('') + '</div>' + (state.artwork.source === 'upload' ? '<label class="asbo-labs-upload"><input type="file" data-art-file accept=".ai,.eps,.pdf,.svg,.png,.jpg,.jpeg"><strong>' + (state.artwork.filename ? esc(state.artwork.filename) : 'Tap or click to choose a file') + '</strong><span>Phase 1 stores the filename locally only — nothing is uploaded yet.</span></label>' : '') + '</section>' +
+                }).join('') + '</div>' + (state.artwork.source === 'upload' ? '<label class="asbo-labs-upload"><input type="file" data-art-file accept=".ai,.eps,.pdf,.svg,.png,.jpg,.jpeg"><strong>' + (state.artwork.filename ? esc(state.artwork.filename) : 'Tap or click to choose a file') + '</strong><span>Beta preview only: the filename stays in this browser; no file is uploaded to WordPress yet.</span></label>' : '') + '</section>' +
                 '<section class="asbo-labs-art-group"><h3>2. Where should we place it?</h3><div class="asbo-labs-placement-grid">' + placements.map(function (p) {
                     return '<button type="button" data-action="placement" data-value="' + p[0] + '" class="' + (state.artwork.placement === p[0] ? 'is-selected' : '') + '"><span class="asbo-labs-placement-icon">✦</span><b>' + esc(p[1]) + '</b></button>';
                 }).join('') + '</div></section>' +
-                '<section class="asbo-labs-art-group"><h3>3. Production notes <small>(optional)</small></h3><textarea data-action="art-notes" rows="4" placeholder="Thread colors, size preference, match a previous order, or anything else we should know…">' + esc(state.artwork.notes) + '</textarea></section>' +
+                '<section class="asbo-labs-art-group"><h3>3. Production notes <small>(optional)</small></h3><textarea data-action="art-notes" rows="4" maxlength="500" placeholder="Thread colors, size preference, match a previous order, or anything else we should know…">' + esc(state.artwork.notes) + '</textarea></section>' +
                 '<div class="asbo-labs-art-actions"><button type="button" class="asbo-labs-secondary" data-action="step" data-step="1">← Back to items</button><button type="button" class="asbo-labs-primary-gold" data-action="step" data-step="3">Continue to review →</button></div>' +
-            '</section>' + itemSummary +
+            '</section>' + orderSummaryRail() +
         '</div>';
     }
 
     function orderSummaryRail() {
         var rows = state.items.map(function (item) {
-            return '<div class="asbo-labs-summary-item"><img src="' + esc(item.image) + '" alt=""><div><strong>' + esc(item.name) + '</strong><span>' + esc(capitalize(item.decoration)) + ' · ' + item.qty + ' pieces</span></div><b>' + money(item.total) + '</b></div>';
+            return '<button type="button" class="asbo-labs-summary-item" data-action="edit-item" data-id="' + item.productId + '"><img src="' + esc(item.image) + '" alt=""><div><strong>' + esc(item.name) + '</strong><span>' + esc(capitalize(item.decoration)) + ' · ' + item.qty + ' pieces</span></div><b>' + money(item.total) + '</b></button>';
         }).join('');
-        return '<aside class="asbo-labs-order-rail"><span class="asbo-labs-eyebrow">Your project</span><h3>' + state.items.length + ' ' + (state.items.length === 1 ? 'style' : 'styles') + ' selected</h3><div class="asbo-labs-summary-list">' + (rows || '<p>No styles added yet.</p>') + '</div><dl><div><dt>Total pieces</dt><dd>' + totalPieces() + '</dd></div><div><dt>Estimated total</dt><dd>' + money(totalValue()) + '</dd></div></dl><div class="asbo-labs-rail-note"><strong>Artwork status</strong><span>' + (state.artwork.filename ? 'File selected for beta preview' : 'No artwork file selected') + '</span></div></aside>';
+        return '<aside class="asbo-labs-order-rail"><span class="asbo-labs-eyebrow">Your project</span><h3>' + state.items.length + ' ' + (state.items.length === 1 ? 'style' : 'styles') + ' selected</h3><div class="asbo-labs-summary-list">' + (rows || '<p>No styles added yet.</p>') + '</div><dl><div><dt>Total pieces</dt><dd>' + totalPieces() + '</dd></div><div><dt>Estimated total</dt><dd>' + money(totalValue()) + '</dd></div></dl><div class="asbo-labs-rail-note"><strong>Artwork status</strong><span>' + (state.artwork.filename ? 'File selected for beta preview' : 'No artwork file selected') + '</span></div><button type="button" class="asbo-labs-rail-edit" data-action="step" data-step="1">Edit items</button></aside>';
     }
 
     function checkoutStep() {
-        return '<div class="asbo-labs-review-layout"><section class="asbo-labs-review-main"><header><span class="asbo-labs-eyebrow">Review</span><h2>Review the beta order.</h2><p>This is intentionally the end of the Labs phase-1 path. It does not touch the live cart or create a WooCommerce order.</p></header>' +
+        return '<div class="asbo-labs-review-layout"><section class="asbo-labs-review-main"><header><span class="asbo-labs-eyebrow">Checkout</span><h2>Review your beta project.</h2><p>This review screen is the final safety stop before we connect V2 to the live ASBO cart and checkout services.</p></header>' +
             '<div class="asbo-labs-review-items">' + state.items.map(function (item) {
                 return '<article><img src="' + esc(item.image) + '" alt=""><div><strong>' + esc(item.name) + '</strong><span>' + esc(capitalize(item.decoration)) + ' · ' + item.qty + ' pieces</span></div><b>' + money(item.total) + '</b></article>';
             }).join('') + '</div>' +
             '<section class="asbo-labs-review-art"><h3>Artwork plan</h3><dl><div><dt>Source</dt><dd>' + esc(capitalize(state.artwork.source)) + '</dd></div><div><dt>Placement</dt><dd>' + esc(state.artwork.placement.replace(/-/g, ' ')) + '</dd></div><div><dt>File</dt><dd>' + esc(state.artwork.filename || 'None selected') + '</dd></div></dl>' + (state.artwork.notes ? '<p><strong>Notes:</strong> ' + esc(state.artwork.notes) + '</p>' : '') + '</section>' +
-            '<div class="asbo-labs-beta-stop"><strong>Integration safety stop</strong><p>Checkout/cart writes are disabled in this beta. Once the UX is approved, this exact Builder V2 shell can be wired to production ASBO pricing, artwork persistence, cart and checkout.</p></div>' +
-            '<div class="asbo-labs-art-actions"><button type="button" class="asbo-labs-secondary" data-action="step" data-step="2">← Back to artwork</button><button type="button" class="asbo-labs-primary-navy" disabled>Beta checkout disabled</button></div></section>' + orderSummaryRail() + '</div>';
+            '<div class="asbo-labs-beta-stop"><strong>Integration safety stop</strong><p>No cart, order, stock, artwork, or product data is written by ASBO Labs. The next integration phase will connect this approved V2 interface to existing production services rather than re-create them.</p></div>' +
+            '<div class="asbo-labs-art-actions"><button type="button" class="asbo-labs-secondary" data-action="step" data-step="2">← Back to artwork</button><button type="button" class="asbo-labs-primary-navy" disabled>Live checkout not connected yet</button></div></section>' + orderSummaryRail() + '</div>';
     }
 
     function projectFooter() {
-        return '<footer class="asbo-labs-project-footer"><div><small>Project summary</small><strong>' + state.items.length + ' styles</strong></div><div><small>Total pieces</small><strong>' + totalPieces() + '</strong></div><div><small>Estimated total</small><strong>' + money(totalValue()) + '</strong></div><span class="asbo-labs-footer-spacer"></span>' + (state.step === 1 ? '<button type="button" class="asbo-labs-footer-link" data-action="step" data-step="2"' + (state.items.length < 1 ? ' disabled' : '') + '>Continue to Artwork →</button>' : state.step === 2 ? '<button type="button" class="asbo-labs-footer-link" data-action="step" data-step="3">Review beta order →</button>' : '<button type="button" class="asbo-labs-footer-link" data-action="reset">Reset Labs session</button>') + '</footer>';
-    }
-
-    function capitalize(value) {
-        value = String(value || '');
-        return value.charAt(0).toUpperCase() + value.slice(1);
+        return '<footer class="asbo-labs-project-footer"><div><small>Project summary</small><strong>' + state.items.length + ' styles</strong></div><div><small>Total pieces</small><strong>' + totalPieces() + '</strong></div><div><small>Estimated total</small><strong>' + money(totalValue()) + '</strong></div><span class="asbo-labs-footer-spacer"></span>' + (state.step === 1 ? '<button type="button" class="asbo-labs-footer-link" data-action="step" data-step="2"' + (state.items.length < 1 ? ' disabled' : '') + '>Continue to Artwork →</button>' : state.step === 2 ? '<button type="button" class="asbo-labs-footer-link" data-action="step" data-step="3">Review beta project →</button>' : '<button type="button" class="asbo-labs-footer-link" data-action="reset">Reset Labs session</button>') + '</footer>';
     }
 
     function addActiveToOrder() {
@@ -354,6 +399,16 @@
         };
         state.items = state.items.filter(function (i) { return Number(i.productId) !== Number(item.productId); });
         state.items.push(item);
+        state.toast = item.name + ' saved to your beta project.';
+        persist();
+        render();
+    }
+
+    function removeItem(id) {
+        var existing = itemForProduct(id);
+        state.items = state.items.filter(function (item) { return Number(item.productId) !== Number(id); });
+        state.quantities = {};
+        state.toast = existing ? existing.name + ' removed from your beta project.' : 'Item removed.';
         persist();
         render();
     }
@@ -363,9 +418,18 @@
         clearTimeout(scheduleOnboarding.timer);
         scheduleOnboarding.timer = setTimeout(function () {
             state.onboarding = false;
-            sessionStorage.setItem('asboLabsIntroSeen', '1');
+            sessionStorage.setItem(INTRO_KEY, '1');
             render();
         }, 10000);
+    }
+
+    function scheduleToast() {
+        if (!state.toast) return;
+        clearTimeout(scheduleToast.timer);
+        scheduleToast.timer = setTimeout(function () {
+            state.toast = '';
+            render();
+        }, 2600);
     }
 
     function bindFileInput() {
@@ -379,36 +443,48 @@
         });
     }
 
+    function setQuantity(id, value) {
+        var clean = Math.max(0, Math.min(9999, parseInt(value, 10) || 0));
+        state.quantities[String(id)] = clean;
+    }
+
     root.addEventListener('click', function (event) {
         var target = event.target.closest('[data-action]');
         if (!target) return;
         var action = target.getAttribute('data-action');
 
         if (action === 'select-product') selectProduct(target.getAttribute('data-id'), true);
+        if (action === 'edit-item') { state.step = 1; persist(); selectProduct(target.getAttribute('data-id'), true); }
         if (action === 'decoration') { state.decoration = target.getAttribute('data-value'); render(); }
-        if (action === 'qty') {
+        if (action === 'qty' || action === 'qty-add') {
             var id = String(target.getAttribute('data-id'));
             var delta = Number(target.getAttribute('data-delta') || 0);
-            state.quantities[id] = Math.max(0, Number(state.quantities[id] || 0) + delta);
+            setQuantity(id, Number(state.quantities[id] || 0) + delta);
             render();
         }
         if (action === 'toggle-colors') { state.showAllColors = !state.showAllColors; render(); }
         if (action === 'add-order') addActiveToOrder();
+        if (action === 'remove-order') removeItem(target.getAttribute('data-id'));
         if (action === 'step') {
             var step = Number(target.getAttribute('data-step') || 1);
             if (step === 2 && state.items.length < 1) return;
             state.step = Math.min(3, Math.max(1, step));
-            persist(); render(); window.scrollTo({ top: root.getBoundingClientRect().top + window.scrollY - 24, behavior: 'smooth' });
+            persist();
+            render();
+            window.scrollTo({ top: root.getBoundingClientRect().top + window.scrollY - 24, behavior: 'smooth' });
         }
-        if (action === 'dismiss-intro') { state.onboarding = false; sessionStorage.setItem('asboLabsIntroSeen', '1'); render(); }
-        if (action === 'save') { persist(); target.textContent = 'Saved'; setTimeout(render, 700); }
+        if (action === 'dismiss-intro') { state.onboarding = false; sessionStorage.setItem(INTRO_KEY, '1'); render(); }
+        if (action === 'show-intro') { state.onboarding = true; render(); }
+        if (action === 'save') { persist(); state.toast = 'Beta draft saved on this device.'; render(); }
         if (action === 'art-source') { state.artwork.source = target.getAttribute('data-value'); persist(); render(); }
         if (action === 'placement') { state.artwork.placement = target.getAttribute('data-value'); persist(); render(); }
         if (action === 'reset') {
-            localStorage.removeItem(STORAGE); sessionStorage.removeItem('asboLabsIntroSeen'); location.reload();
+            localStorage.removeItem(STORAGE);
+            sessionStorage.removeItem(INTRO_KEY);
+            location.reload();
         }
         if (action === 'pricing-info') {
-            alert('ASBO Labs phase 1 uses WooCommerce regular prices for the UX sandbox. Exact production ASBO quantity-tier pricing is intentionally not duplicated here; it will be connected through a customer-safe adapter after the workflow is approved.');
+            alert('ASBO Labs currently uses customer-visible WooCommerce regular prices for its UX estimate. Production quantity-tier pricing has not been duplicated or guessed. It will be connected to the existing ASBO pricing service during the integration beta.');
         }
         if (action === 'mobile-back') {
             var library = root.querySelector('.asbo-labs-library');
@@ -427,6 +503,10 @@
             if (oldQty > 0) state.quantities[String(target.value)] = oldQty;
             render();
         }
+        if (target.getAttribute('data-action') === 'qty-input') {
+            setQuantity(target.getAttribute('data-id'), target.value);
+            render();
+        }
     });
 
     root.addEventListener('input', function (event) {
@@ -436,6 +516,11 @@
             root.querySelectorAll('.asbo-labs-product-row').forEach(function (row) {
                 row.hidden = row.textContent.toLowerCase().indexOf(q) === -1;
             });
+        }
+        if (target.getAttribute('data-action') === 'qty-input') {
+            setQuantity(target.getAttribute('data-id'), target.value);
+            var card = target.closest('.asbo-labs-color-card');
+            if (card) card.classList.toggle('has-qty', Number(target.value || 0) > 0);
         }
         if (target.getAttribute('data-action') === 'art-notes') {
             state.artwork.notes = target.value;
