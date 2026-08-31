@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ASBO Labs
  * Description: Private beta workspace for the next All Star Bulk Order experience. Reads WooCommerce catalog data but does not write carts or orders.
- * Version: 1.3.0-beta.2
+ * Version: 1.3.0-beta.3
  * Author: All Star Embroidery
  * Requires at least: 6.5
  * Requires PHP: 7.4
@@ -14,9 +14,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class ASBO_Labs {
-    public const VERSION = '1.3.0-beta.2';
+    public const VERSION = '1.3.0-beta.3';
     private const REST_NS = 'asbo-labs/v1';
     private const BETA_FEED = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/asbo-labs/beta.json';
+    private const DIGITIZING_SETUP_FEE = 15.0;
+    private const SHIPPING_FLAT_FEE = 10.0;
+    private const STITCH_ALLOWANCE = 10000;
 
     public static function boot(): void {
         add_action( 'init', array( __CLASS__, 'register_block' ) );
@@ -40,8 +43,10 @@ final class ASBO_Labs {
     public static function shortcode( $atts = array() ): string {
         $atts = shortcode_atts(
             array(
-                'category' => '',
-                'limit'    => 24,
+                'category'      => '',
+                'limit'         => 24,
+                'layout_width'  => 'contained',
+                'show_beta_bar' => true,
             ),
             is_array( $atts ) ? $atts : array(),
             'asbo_labs'
@@ -49,8 +54,10 @@ final class ASBO_Labs {
 
         return self::render_builder(
             array(
-                'category' => sanitize_title( (string) $atts['category'] ),
-                'limit'    => max( 6, min( 60, absint( $atts['limit'] ) ) ),
+                'category'    => sanitize_title( (string) $atts['category'] ),
+                'limit'       => max( 6, min( 60, absint( $atts['limit'] ) ) ),
+                'layoutWidth' => sanitize_key( (string) $atts['layout_width'] ),
+                'showBetaBar' => filter_var( $atts['show_beta_bar'], FILTER_VALIDATE_BOOLEAN ),
             )
         );
     }
@@ -64,8 +71,14 @@ final class ASBO_Labs {
             return '<div class="asbo-labs-missing">ASBO Labs requires WooCommerce.</div>';
         }
 
-        $category = isset( $attributes['category'] ) ? sanitize_title( (string) $attributes['category'] ) : '';
-        $limit    = isset( $attributes['limit'] ) ? max( 6, min( 60, absint( $attributes['limit'] ) ) ) : 24;
+        $category      = isset( $attributes['category'] ) ? sanitize_title( (string) $attributes['category'] ) : '';
+        $limit         = isset( $attributes['limit'] ) ? max( 6, min( 60, absint( $attributes['limit'] ) ) ) : 24;
+        $layout_width  = isset( $attributes['layoutWidth'] ) ? sanitize_key( (string) $attributes['layoutWidth'] ) : 'contained';
+        $show_beta_bar = ! array_key_exists( 'showBetaBar', $attributes ) || (bool) $attributes['showBetaBar'];
+
+        if ( ! in_array( $layout_width, array( 'contained', 'wide', 'full' ), true ) ) {
+            $layout_width = 'contained';
+        }
 
         wp_enqueue_style(
             'asbo-labs',
@@ -93,10 +106,15 @@ final class ASBO_Labs {
             'nonce'              => wp_create_nonce( 'wp_rest' ),
             'category'           => $category,
             'limit'              => $limit,
+            'layoutWidth'        => $layout_width,
+            'showBetaBar'        => $show_beta_bar,
             'currencySymbol'     => get_woocommerce_currency_symbol(),
             'currencyCode'       => get_woocommerce_currency(),
+            'digitizingSetupFee'  => self::DIGITIZING_SETUP_FEE,
+            'shippingFlatFee'    => self::SHIPPING_FLAT_FEE,
+            'stitchAllowance'    => self::STITCH_ALLOWANCE,
             'productionDetected' => shortcode_exists( 'asbo_bulk_order' ),
-            'phase'              => 'ux-sandbox-2',
+            'phase'              => 'ux-sandbox-3',
         );
 
         wp_add_inline_script(
@@ -105,7 +123,8 @@ final class ASBO_Labs {
             'before'
         );
 
-        return '<div class="asbo-labs-root" data-asbo-labs-version="' . esc_attr( self::VERSION ) . '"><div class="asbo-labs-loading">Loading ASBO Labs…</div></div>';
+        $classes = 'asbo-labs-root asbo-labs-root--' . $layout_width;
+        return '<div class="' . esc_attr( $classes ) . '" data-asbo-labs-version="' . esc_attr( self::VERSION ) . '"><div class="asbo-labs-loading">Loading ASBO Labs...</div></div>';
     }
 
     public static function register_rest_routes(): void {
@@ -192,7 +211,6 @@ final class ASBO_Labs {
 
     private static function product_card_payload( WC_Product $product ): array {
         $regular = self::safe_regular_price( $product );
-        $terms   = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'names' ) );
 
         return array(
             'id'            => $product->get_id(),
@@ -201,7 +219,6 @@ final class ASBO_Labs {
             'startingPrice' => $regular,
             'priceHtml'     => wp_strip_all_tags( $product->get_price_html() ),
             'type'          => $product->get_type(),
-            'categories'    => is_wp_error( $terms ) ? array() : array_values( $terms ),
         );
     }
 
@@ -239,6 +256,7 @@ final class ASBO_Labs {
                     'attributes' => $attributes,
                     'label'      => self::variation_label( $attributes ),
                     'price'      => self::safe_regular_price( $variation, $product ),
+                    'sku'        => $variation->get_sku(),
                     'inStock'    => $variation->is_in_stock(),
                 );
             }
@@ -249,18 +267,30 @@ final class ASBO_Labs {
                 'attributes' => array(),
                 'label'      => 'Default',
                 'price'      => self::safe_regular_price( $product ),
+                'sku'        => $product->get_sku(),
                 'inStock'    => $product->is_in_stock(),
             );
         }
 
         $payload = array(
-            'id'            => $product->get_id(),
-            'name'          => wp_strip_all_tags( $product->get_name() ),
-            'image'         => self::image_url( $product ),
-            'startingPrice' => self::safe_regular_price( $product ),
-            'short'         => wp_strip_all_tags( $product->get_short_description() ),
-            'variations'    => $variations,
-            'pricing'       => self::safe_pricing_matrix( $product ),
+            'id'              => $product->get_id(),
+            'name'            => wp_strip_all_tags( $product->get_name() ),
+            'image'           => self::image_url( $product ),
+            'startingPrice'   => self::safe_regular_price( $product ),
+            'priceHtml'       => wp_strip_all_tags( $product->get_price_html() ),
+            'sku'             => $product->get_sku(),
+            'short'           => wp_strip_all_tags( $product->get_short_description() ),
+            'description'     => wp_strip_all_tags( $product->get_description() ),
+            'stockStatus'     => $product->is_in_stock() ? 'In stock' : 'Out of stock',
+            'variationCount'  => count( $variations ),
+            'attributes'      => self::visible_attributes( $product ),
+            'variations'      => $variations,
+            'pricing'         => self::safe_pricing_matrix( $product ),
+            'fees'            => array(
+                'digitizingSetup' => self::DIGITIZING_SETUP_FEE,
+                'shippingFlat'    => self::SHIPPING_FLAT_FEE,
+                'stitchAllowance' => self::STITCH_ALLOWANCE,
+            ),
         );
 
         /**
@@ -268,6 +298,34 @@ final class ASBO_Labs {
          * without Labs ever reading supplier cost/reference fields.
          */
         return apply_filters( 'asbo_labs_product_payload', $payload, $product );
+    }
+
+    private static function visible_attributes( WC_Product $product ): array {
+        $rows = array();
+        foreach ( $product->get_attributes() as $attribute ) {
+            if ( ! $attribute instanceof WC_Product_Attribute || ! $attribute->get_visible() ) {
+                continue;
+            }
+
+            $values = array();
+            if ( $attribute->is_taxonomy() ) {
+                foreach ( wc_get_product_terms( $product->get_id(), $attribute->get_name(), array( 'fields' => 'names' ) ) as $term_name ) {
+                    $values[] = wp_strip_all_tags( (string) $term_name );
+                }
+            } else {
+                $values = array_map( 'wc_clean', $attribute->get_options() );
+            }
+
+            if ( empty( $values ) ) {
+                continue;
+            }
+
+            $rows[] = array(
+                'label' => wc_attribute_label( $attribute->get_name() ),
+                'value' => implode( ', ', array_slice( $values, 0, 8 ) ) . ( count( $values ) > 8 ? ' +' . ( count( $values ) - 8 ) : '' ),
+            );
+        }
+        return $rows;
     }
 
     private static function safe_regular_price( WC_Product $product, ?WC_Product $fallback = null ): float {
@@ -290,6 +348,8 @@ final class ASBO_Labs {
             '_asbo_bulk_pricing',
             'asbo_bulk_pricing',
             '_asbo_customer_pricing',
+            '_asbo_price_tiers',
+            'asbo_price_tiers',
         );
 
         foreach ( $keys as $key ) {
@@ -397,7 +457,7 @@ final class ASBO_Labs {
             'homepage'      => 'https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-labs',
             'download_link' => isset( $info['download_url'] ) ? $info['download_url'] : '',
             'sections'      => array(
-                'description' => 'Private UX beta lane for the next ASBO builder.',
+                'description' => 'Private UX beta lane for the next ASBO experience.',
                 'changelog'   => isset( $info['changelog'] ) ? (string) $info['changelog'] : '',
             ),
         );
