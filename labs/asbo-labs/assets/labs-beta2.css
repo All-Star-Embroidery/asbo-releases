@@ -1,0 +1,56 @@
+/* ASBO Labs 1.3.0-beta.2 — interaction hardening layer */
+.asbo-labs-top-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px}
+.asbo-labs-how{min-height:42px;padding:0 8px;border:0;background:transparent;color:#6F541D;font-size:11px;font-weight:750;text-decoration:underline;text-underline-offset:3px}
+.asbo-labs-toast{position:fixed;z-index:70;right:24px;bottom:92px;max-width:min(390px,calc(100vw - 32px));padding:13px 16px;border-left:3px solid var(--asbo-labs-gold);background:var(--asbo-labs-navy);color:#fff;box-shadow:0 12px 30px rgba(8,15,31,.18);font-size:12px;font-weight:700}
+
+.asbo-labs-mini-summary{display:flex;align-items:center;gap:14px;margin:-5px 0 18px;padding:11px 0;border-top:1px solid var(--asbo-labs-line);border-bottom:1px solid var(--asbo-labs-line);color:var(--asbo-labs-muted);font-size:11px}
+.asbo-labs-mini-summary span{white-space:nowrap}
+.asbo-labs-mini-summary b{color:var(--asbo-labs-navy)}
+.asbo-labs-mini-summary button{margin-left:auto;padding:0;border:0;background:transparent;color:#72571F;font-size:11px;font-weight:800}
+.asbo-labs-product-row.is-in-project:not(.is-active){box-shadow:inset 3px 0 0 rgba(210,169,82,.55)}
+
+.asbo-labs-stepper{grid-template-columns:30px minmax(48px,1fr) 30px}
+.asbo-labs-stepper input{width:100%;min-width:0;border:0;border-left:1px solid var(--asbo-labs-line);border-right:1px solid var(--asbo-labs-line);background:#fff;color:var(--asbo-labs-navy);font-size:12px;font-weight:800;text-align:center;appearance:textfield;-moz-appearance:textfield}
+.asbo-labs-stepper input::-webkit-inner-spin-button,.asbo-labs-stepper input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.asbo-labs-quick-qty{display:flex;gap:5px;margin-top:6px}
+.asbo-labs-quick-qty button{flex:1;min-height:27px;border:1px solid #E7E1D7;border-radius:3px;background:#FBFAF8;color:#6D5940;font-size:9px;font-weight:800}
+.asbo-labs-quick-qty button:hover{border-color:var(--asbo-labs-gold);background:#FFF9EA}
+
+.asbo-labs-danger-link{min-height:46px;padding:0 15px;border:1px solid #D7A9AC;border-radius:5px;background:#fff;color:var(--asbo-labs-red);font-size:12px;font-weight:800}
+.asbo-labs-summary-item{display:grid!important;grid-template-columns:52px minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;padding:11px 0!important;border:0!important;border-bottom:1px solid var(--asbo-labs-line)!important;border-radius:0!important;background:transparent!important;text-align:left;color:inherit}
+.asbo-labs-summary-item:hover{background:#FBF8F1!important}
+.asbo-labs-summary-item img{width:48px;height:44px;object-fit:contain;background:#fff}
+.asbo-labs-summary-item div{min-width:0}
+.asbo-labs-summary-item strong,.asbo-labs-summary-item span{display:block}
+.asbo-labs-summary-item strong{color:var(--asbo-labs-navy);font-size:11px;line-height:1.25}
+.asbo-labs-summary-item span{margin-top:3px;color:var(--asbo-labs-muted);font-size:9px}
+.asbo-labs-summary-item>b{color:var(--asbo-labs-navy);font-size:10px;white-space:nowrap}
+.asbo-labs-rail-edit{width:100%;min-height:42px;margin-top:14px;border:1px solid var(--asbo-labs-line-2);border-radius:4px;background:#fff;color:var(--asbo-labs-navy);font-size:11px;font-weight:800}
+
+/* Use desktop/tablet screen real estate instead of turning Items into one long page. */
+@media (min-width:760px){
+  .asbo-labs-workspace{height:min(820px,calc(100vh - 190px));min-height:620px;overflow:hidden}
+  .asbo-labs-library,.asbo-labs-configurator{height:100%;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+  .asbo-labs-library::-webkit-scrollbar,.asbo-labs-configurator::-webkit-scrollbar{width:8px}
+  .asbo-labs-library::-webkit-scrollbar-thumb,.asbo-labs-configurator::-webkit-scrollbar-thumb{background:#D4CEC5;border-radius:8px}
+}
+
+@media (max-width:920px) and (min-width:760px){
+  .asbo-labs-top-actions{grid-column:2;grid-row:1}
+  .asbo-labs-how{display:none}
+  .asbo-labs-mini-summary{flex-wrap:wrap}
+  .asbo-labs-mini-summary button{width:100%;margin-left:0;text-align:left}
+}
+
+@media (max-width:759px){
+  .asbo-labs-top-actions{display:none}
+  .asbo-labs-workspace,.asbo-labs-library,.asbo-labs-configurator{height:auto;overflow:visible}
+  .asbo-labs-toast{left:14px;right:14px;bottom:82px;max-width:none}
+  .asbo-labs-mini-summary{gap:10px;overflow-x:auto;margin-top:0}
+  .asbo-labs-mini-summary button{display:none}
+  .asbo-labs-quick-qty{display:none}
+  .asbo-labs-stepper{grid-template-columns:34px 56px 34px;justify-content:start}
+  .asbo-labs-stepper input{font-size:13px}
+  .asbo-labs-danger-link{width:100%}
+  .asbo-labs-summary-item{grid-template-columns:48px minmax(0,1fr) auto!important}
+}
