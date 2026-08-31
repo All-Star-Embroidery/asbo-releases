@@ -1,0 +1,146 @@
+name: Build ASBO Labs Beta
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - asbo-labs
+    paths:
+      - 'labs/asbo-labs/**'
+      - '.seed-asbo-labs-build'
+
+permissions:
+  contents: write
+
+jobs:
+  build-labs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Labs branch
+        uses: actions/checkout@v5
+        with:
+          ref: asbo-labs
+          fetch-depth: 0
+
+      - name: Safety guard — production updater must be untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if ! git diff --quiet origin/main -- latest.json; then
+            echo 'ERROR: ASBO Labs must never modify production latest.json.' >&2
+            git diff origin/main -- latest.json
+            exit 1
+          fi
+
+      - name: Read Labs version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(php -r '$s=file_get_contents("labs/asbo-labs/asbo-labs.php"); if(!preg_match("/Version:\\s*([^\\r\\n]+)/",$s,$m)){exit(2);} echo trim($m[1]);')"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building ASBO Labs $VERSION"
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -l labs/asbo-labs/asbo-labs.php
+          php -l labs/asbo-labs/block/editor.asset.php
+          node --check labs/asbo-labs/assets/labs.js
+          node --check labs/asbo-labs/block/editor.js
+          python3 -m json.tool labs/asbo-labs/block/block.json >/dev/null
+
+          grep -q "Plugin Name: ASBO Labs" labs/asbo-labs/asbo-labs.php
+          grep -q "asbo-labs/v1" labs/asbo-labs/asbo-labs.php
+          grep -q "BETA_FEED" labs/asbo-labs/asbo-labs.php
+          grep -q "no cart/order writes" labs/asbo-labs/assets/labs.js
+
+          # Phase-1 code must contain no WooCommerce cart/order mutation calls.
+          ! grep -R -E "WC\(\)->cart->add_to_cart|wc_create_order|update_stock|set_stock_quantity" labs/asbo-labs
+
+      - name: Build installable Labs ZIP
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-labs-build
+          mkdir -p /tmp/asbo-labs-build/asbo-labs labs/dist
+          cp -R labs/asbo-labs/. /tmp/asbo-labs-build/asbo-labs/
+
+          ZIP="labs/dist/asbo-labs-${VERSION}.zip"
+          rm -f "$ZIP"
+          (
+            cd /tmp/asbo-labs-build
+            zip -qr "$GITHUB_WORKSPACE/$ZIP" asbo-labs
+          )
+
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -q 'asbo-labs/asbo-labs.php'
+          unzip -p "$ZIP" asbo-labs/asbo-labs.php | grep -q "Version: ${VERSION}"
+          sha256sum "$ZIP"
+          ls -lh "$ZIP"
+
+      - name: Update beta.json only
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+
+          version = os.environ['VERSION']
+          p = 'beta.json'
+          with open(p) as f:
+              data = json.load(f)
+
+          data['version'] = version
+          data['download_url'] = f'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/asbo-labs/labs/dist/asbo-labs-{version}.zip'
+          data['channel'] = 'labs'
+          data['phase'] = 'ux-sandbox'
+          data['production_feed'] = False
+          data['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+
+          with open(p, 'w') as f:
+              json.dump(data, f, indent=2)
+              f.write('\n')
+          PY
+
+          test "$(python3 -c 'import json; print(json.load(open("beta.json"))["production_feed"])')" = 'False'
+
+      - name: Publish Labs branch package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "labs/dist/asbo-labs-${VERSION}.zip" beta.json
+          git commit -m "labs: build ASBO Labs ${VERSION}" || exit 0
+          git push origin HEAD:asbo-labs
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asbo-labs-${{ steps.version.outputs.version }}
+          path: labs/dist/asbo-labs-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final production safety check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if ! git diff --quiet origin/main -- latest.json; then
+            echo 'ERROR: production latest.json changed during Labs build.' >&2
+            exit 1
+          fi
+          echo 'ASBO Labs built successfully. Production latest.json remains untouched.'
