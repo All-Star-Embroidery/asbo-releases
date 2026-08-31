@@ -1,0 +1,25 @@
+{
+  "apiVersion": 3,
+  "name": "allstar/asbo-labs-builder",
+  "version": "1.3.0-beta.1",
+  "title": "ASBO Labs Builder",
+  "category": "widgets",
+  "icon": "admin-tools",
+  "description": "Private beta workspace for testing the next ASBO ordering experience.",
+  "textdomain": "asbo-labs",
+  "attributes": {
+    "category": {
+      "type": "string",
+      "default": ""
+    },
+    "limit": {
+      "type": "number",
+      "default": 24
+    }
+  },
+  "editorScript": "file:./editor.js",
+  "supports": {
+    "align": ["wide", "full"],
+    "html": false
+  }
+}
