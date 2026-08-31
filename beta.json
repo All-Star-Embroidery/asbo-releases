@@ -6,6 +6,6 @@
   "channel": "labs",
   "phase": "ux-sandbox",
   "production_feed": false,
-  "changelog": "<h4>1.3.0-beta.1</h4><ul><li>Introduces the isolated ASBO Labs beta lane.</li><li>Adds the split desktop product-library/configurator workspace, three-step Items \u2192 Artwork \u2192 Checkout flow, and 10-second New here? helper.</li><li>Adds responsive mobile behavior and a concise artwork-planning experience.</li><li>Phase 1 is read-only against WooCommerce: no cart, order, artwork upload, stock or pricing writes.</li></ul>",
+  "changelog": "<h4>1.3.0-beta.2</h4><ul><li>Turns the desktop Items screen into a true split workspace with independently scrolling product and configuration panes, reducing page-level scrolling.</li><li>Existing project items now reopen with their decoration, variation/size and quantity choices restored.</li><li>Adds direct quantity entry plus +6/+12 desktop quick-add controls for faster bulk ordering.</li><li>Adds clearer project-item state, remove/edit actions, saved-project confirmation toasts, and an always-available How it works helper.</li><li>Streamlines Artwork copy and makes project-summary items directly editable.</li><li>Remains a read-only UX sandbox: no WooCommerce cart/order/artwork/stock/product writes and no production latest.json changes.</li></ul>",
   "last_updated": "2026-08-31 02:24:32 +0000"
 }
