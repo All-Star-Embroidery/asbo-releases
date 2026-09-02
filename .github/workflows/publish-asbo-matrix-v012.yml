@@ -1,0 +1,117 @@
+name: Publish ASBO Matrix v0.1.2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.seed-publish-asbo-matrix-v012-main'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Matrix branch
+        uses: actions/checkout@v5
+        with:
+          ref: asbo-matrix
+          fetch-depth: 0
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          git diff --quiet origin/main -- latest.json
+
+      - name: Apply Woo beta compatibility patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 matrix/scripts/build-v012.py
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -l matrix/asbo-matrix/asbo-matrix.php
+          php -l matrix/asbo-matrix/block/editor.asset.php
+          node --check matrix/asbo-matrix/assets/matrix.js
+          node --check matrix/asbo-matrix/block/editor.js
+          python3 -m json.tool matrix/asbo-matrix/block/block.json >/dev/null
+          grep -q 'Version: 0.1.2' matrix/asbo-matrix/asbo-matrix.php
+          grep -q "private const VERSION = '0.1.2'" matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'woocommerce_store_api_add_to_cart_data' matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'asbo-matrix-store-api' matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'setDecorationCookie' matrix/asbo-matrix/assets/matrix.js
+          grep -q 'wp-block-woocommerce-add-to-cart-with-options-quantity-selector' matrix/asbo-matrix/assets/matrix.js
+          grep -q '"version": "0.1.2"' matrix/asbo-matrix/block/block.json
+          grep -q '"category": "all-star-embroidery"' matrix/asbo-matrix/block/block.json
+          ! grep -R -E "update_meta_data\(|set_regular_price\(|set_sale_price\(|wc_create_order\(|WC\(\)->cart->add_to_cart" matrix/asbo-matrix
+
+      - name: Commit source update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add matrix/asbo-matrix/asbo-matrix.php matrix/asbo-matrix/assets/matrix.js matrix/asbo-matrix/block/block.json
+          git commit -m 'matrix: support Woo beta Store API add to cart' || true
+          git push origin HEAD:asbo-matrix
+
+      - name: Build installable ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-matrix-build
+          mkdir -p /tmp/asbo-matrix-build/asbo-matrix dist/matrix
+          cp -R matrix/asbo-matrix/. /tmp/asbo-matrix-build/asbo-matrix/
+          cd /tmp/asbo-matrix-build
+          zip -qr "$GITHUB_WORKSPACE/dist/matrix/asbo-matrix-0.1.2.zip" asbo-matrix
+          cd "$GITHUB_WORKSPACE"
+          unzip -t dist/matrix/asbo-matrix-0.1.2.zip >/dev/null
+          unzip -p dist/matrix/asbo-matrix-0.1.2.zip asbo-matrix/asbo-matrix.php | grep -q 'Version: 0.1.2'
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/notes.md <<'EOF'
+          # ASBO Matrix v0.1.2
+
+          Fixes compatibility with WooCommerce's **Add to Cart + Options (Beta)** and **Product Quantity (Beta)** blocks.
+
+          - Adds production-compatible ASBO metadata to WooCommerce Store API add-to-cart requests.
+          - Existing production ASBO tier pricing then applies the correct combined quantity break in Cart, Mini-Cart, and Checkout.
+          - Keeps classic product add-to-cart form support unchanged.
+          - Syncs the Matrix active-tier indicator with the Beta quantity input.
+          - Preserves the selected Embroidery/Patch method for Store API requests.
+          - Products without a valid matrix remain native WooCommerce products.
+          - Production ASBO `latest.json` is unchanged.
+          EOF
+          if gh release view matrix-v0.1.2 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload matrix-v0.1.2 dist/matrix/asbo-matrix-0.1.2.zip --clobber --repo All-Star-Embroidery/asbo-releases
+          else
+            gh release create matrix-v0.1.2 dist/matrix/asbo-matrix-0.1.2.zip --repo All-Star-Embroidery/asbo-releases --target asbo-matrix --title 'ASBO Matrix v0.1.2' --notes-file /tmp/notes.md
+          fi
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asbo-matrix-0.1.2
+          path: dist/matrix/asbo-matrix-0.1.2.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final safety check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          git diff --quiet origin/main -- latest.json
