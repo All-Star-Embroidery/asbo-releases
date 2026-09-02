@@ -37,6 +37,16 @@
         return forms[0];
     }
 
+    function setDecorationCookie(productId, value) {
+        if (!productId || !value) return;
+        var key = 'asbo_matrix_decoration_' + String(productId);
+        document.cookie = key + '=' + encodeURIComponent(value) + '; path=/; max-age=7200; SameSite=Lax';
+    }
+
+    function findBetaQuantityInput() {
+        return document.querySelector('.wp-block-woocommerce-add-to-cart-with-options-quantity-selector input.qty, .wp-block-woocommerce-add-to-cart-with-options-quantity-selector input[type="number"]');
+    }
+
     function ensureHidden(form, name, value) {
         var input = form.querySelector('input[name="' + name + '"]');
         if (!input) {
@@ -56,10 +66,12 @@
         var productId = block.getAttribute('data-asbo-matrix-product') || '';
         var currency = block.getAttribute('data-currency-code') || 'USD';
         var selectedDecoration = block.getAttribute('data-default-decoration') || Object.keys(matrix)[0];
+        setDecorationCookie(productId, selectedDecoration);
         var activeTier = block.querySelector('[data-asbo-matrix-active-tier]');
         var form = null;
 
         function syncForm() {
+            setDecorationCookie(productId, selectedDecoration);
             form = findCartForm(productId);
             if (!form) return false;
             ensureHidden(form, 'asbo_matrix_enabled', '1');
@@ -68,10 +80,17 @@
             return true;
         }
 
-        function currentQuantity() {
+        function quantityInput() {
             if (!form) syncForm();
-            if (!form) return 0;
-            var qty = form.querySelector('input.qty, input[name="quantity"]');
+            if (form) {
+                var classicQty = form.querySelector('input.qty, input[name="quantity"]');
+                if (classicQty) return classicQty;
+            }
+            return findBetaQuantityInput();
+        }
+
+        function currentQuantity() {
+            var qty = quantityInput();
             if (!qty) return 1;
             return Math.max(0, parseInt(qty.value || '0', 10) || 0);
         }
@@ -139,15 +158,18 @@
         });
 
         function bindForm() {
-            if (!syncForm()) return false;
-            var qty = form.querySelector('input.qty, input[name="quantity"]');
+            syncForm();
+            var qty = quantityInput();
             if (qty && !qty.dataset.asboMatrixBound) {
                 qty.dataset.asboMatrixBound = '1';
                 qty.addEventListener('input', updateTier);
                 qty.addEventListener('change', updateTier);
             }
-            form.addEventListener('submit', syncForm);
-            return true;
+            if (form && !form.dataset.asboMatrixSubmitBound) {
+                form.dataset.asboMatrixSubmitBound = '1';
+                form.addEventListener('submit', syncForm);
+            }
+            return !!(form || qty);
         }
 
         bindForm();

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ASBO Matrix
  * Description: Adds the All Star bulk pricing matrix to normal WooCommerce product templates and hands standard product-page cart items into the existing ASBO tier-pricing engine.
- * Version: 0.1.1
+ * Version: 0.1.2
  * Update URI: https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-matrix
  * Author: All Star Embroidery
  * Requires at least: 6.5
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class ASBO_Matrix_Plugin {
-    private const VERSION = '0.1.1';
+    private const VERSION = '0.1.2';
     private const META_PRICING = '_asbo_pricing_matrix';
     private const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/matrix.json';
     private const UPDATE_CACHE_KEY = 'asbo_matrix_update_manifest';
@@ -30,6 +30,7 @@ final class ASBO_Matrix_Plugin {
         // receive ASBO cart metadata. Products with no matrix remain completely native.
         add_filter( 'woocommerce_add_to_cart_validation', array( __CLASS__, 'validate_product_page_bulk_choice' ), 20, 6 );
         add_filter( 'woocommerce_add_cart_item_data', array( __CLASS__, 'attach_asbo_cart_metadata' ), 20, 4 );
+        add_filter( 'woocommerce_store_api_add_to_cart_data', array( __CLASS__, 'store_api_add_to_cart_data' ), 20, 2 );
 
         add_filter( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'inject_github_update' ) );
         add_filter( 'plugins_api', array( __CLASS__, 'github_plugin_information' ), 20, 3 );
@@ -437,6 +438,88 @@ final class ASBO_Matrix_Plugin {
         );
 
         return $cart_item_data;
+    }
+
+    /**
+     * WooCommerce's Add to Cart + Options (Beta) block uses the Store API rather
+     * than submitting form.cart. Attach the same ASBO metadata to that request so
+     * production ASBO's existing tier engine prices it identically.
+     */
+    public static function store_api_add_to_cart_data( array $add_to_cart_data, \WP_REST_Request $request ): array {
+        $requested_id = absint( $add_to_cart_data['id'] ?? $request->get_param( 'id' ) );
+        if ( ! $requested_id ) {
+            return $add_to_cart_data;
+        }
+
+        $requested_product = wc_get_product( $requested_id );
+        if ( ! $requested_product instanceof WC_Product ) {
+            return $add_to_cart_data;
+        }
+
+        $variation_id = 0;
+        $parent       = $requested_product;
+        if ( $requested_product instanceof WC_Product_Variation ) {
+            $variation_id = $requested_product->get_id();
+            $parent = wc_get_product( $requested_product->get_parent_id() );
+            if ( ! $parent instanceof WC_Product ) {
+                return $add_to_cart_data;
+            }
+        }
+
+        $matrix = self::parse_pricing_matrix( (string) $parent->get_meta( self::META_PRICING, true ) );
+        if ( empty( $matrix ) ) {
+            return $add_to_cart_data;
+        }
+
+        if ( ! isset( $add_to_cart_data['cart_item_data'] ) || ! is_array( $add_to_cart_data['cart_item_data'] ) ) {
+            $add_to_cart_data['cart_item_data'] = array();
+        }
+
+        if ( ! empty( $add_to_cart_data['cart_item_data']['asbo']['parent_product_id'] ) ) {
+            return $add_to_cart_data;
+        }
+
+        $decoration = '';
+        $explicit = $request->get_param( 'asbo_matrix_decoration' );
+        if ( is_string( $explicit ) ) {
+            $explicit = sanitize_text_field( $explicit );
+            if ( isset( $matrix[ $explicit ] ) ) {
+                $decoration = $explicit;
+            }
+        }
+
+        if ( '' === $decoration ) {
+            $cookie_key = 'asbo_matrix_decoration_' . $parent->get_id();
+            if ( isset( $_COOKIE[ $cookie_key ] ) ) {
+                $cookie_value = sanitize_text_field( wp_unslash( $_COOKIE[ $cookie_key ] ) );
+                if ( isset( $matrix[ $cookie_value ] ) ) {
+                    $decoration = $cookie_value;
+                }
+            }
+        }
+
+        if ( '' === $decoration ) {
+            $methods = array_keys( $matrix );
+            $decoration = isset( $methods[0] ) ? (string) $methods[0] : '';
+        }
+
+        if ( '' === $decoration || ! isset( $matrix[ $decoration ] ) ) {
+            return $add_to_cart_data;
+        }
+
+        $sellable = $variation_id > 0 ? $requested_product : $parent;
+        $regular  = (string) $sellable->get_regular_price( 'edit' );
+        $base_unit_price = '' !== $regular && is_numeric( $regular ) ? (float) $regular : null;
+
+        $add_to_cart_data['cart_item_data']['asbo'] = array(
+            'parent_product_id' => $parent->get_id(),
+            'decoration'        => $decoration,
+            'order_group'       => 'product-page-matrix',
+            'base_unit_price'   => $base_unit_price,
+            'source'            => 'asbo-matrix-store-api',
+        );
+
+        return $add_to_cart_data;
     }
 
     private static function fetch_update_manifest( bool $force = false ): ?array {
