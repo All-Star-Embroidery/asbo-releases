@@ -1,12 +1,12 @@
 {
   "name": "ASBO Matrix",
   "slug": "asbo-matrix",
-  "version": "0.2.0",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/matrix-v0.2.0/asbo-matrix-0.2.0.zip",
+  "version": "0.2.1",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/matrix-v0.2.1/asbo-matrix-0.2.1.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-matrix",
   "requires": "6.5",
   "requires_php": "7.4",
-  "last_updated": "2026-09-02 03:03:57 +0000",
+  "last_updated": "2026-09-02 03:22:34 +0000",
   "description": "All Star bulk quantity pricing matrix and cart-synced single-product quantity controls for WooCommerce product templates.",
-  "changelog": "<h4>0.2.0</h4><ul><li>Adds the All Star Single Product Quantity block to the All Star Embroidery block group.</li><li>The displayed quantity is the amount currently in the cart for the selected variation and decoration.</li><li>Plus and minus update the cart automatically, eliminating the separate Add to Cart click.</li><li>Works inside WooCommerce Add to Cart + Options (Beta) and follows its selected variation.</li><li>Matrix products retain production ASBO quantity-tier pricing; products without a matrix retain native WooCommerce pricing.</li></ul>"
+  "changelog": "<h4>0.2.1</h4><ul><li>Fixes WordPress editor discoverability for All Star Single Product Quantity.</li><li>Removes the restrictive ancestor rule that could hide the block from normal block search.</li><li>Explicitly registers the All Star Embroidery block category as a fallback.</li><li>Adds quantity/cart/bulk search keywords and refreshes editor asset versions.</li><li>Best placed inside WooCommerce Add to Cart + Options (Beta) so the control follows the selected variation.</li></ul>"
 }
