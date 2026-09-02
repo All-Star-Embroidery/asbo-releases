@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "asbo-matrix/pricing",
+  "version": "0.1.0",
+  "title": "ASBO Matrix",
+  "category": "widgets",
+  "icon": "editor-table",
+  "description": "Shows All Star bulk per-piece pricing only when the current WooCommerce product has an ASBO pricing matrix.",
+  "textdomain": "asbo-matrix",
+  "usesContext": ["postId", "postType"],
+  "attributes": {
+    "heading": {
+      "type": "string",
+      "default": "Per-piece pricing by quantity"
+    },
+    "description": {
+      "type": "string",
+      "default": "Your decoration choice and quantity determine the unit price."
+    },
+    "showDescription": {
+      "type": "boolean",
+      "default": true
+    },
+    "showStitchAllowance": {
+      "type": "boolean",
+      "default": true
+    },
+    "showDecorationSelector": {
+      "type": "boolean",
+      "default": true
+    },
+    "showActiveTier": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "editorScript": "file:./editor.js",
+  "supports": {
+    "align": ["wide", "full"],
+    "html": false,
+    "spacing": {
+      "margin": true,
+      "padding": true
+    }
+  }
+}
