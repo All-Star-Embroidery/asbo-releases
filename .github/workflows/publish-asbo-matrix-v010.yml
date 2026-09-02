@@ -1,11 +1,11 @@
-name: Publish ASBO Matrix v0.1.1
+name: Publish ASBO Matrix v0.1.2
 
 on:
   push:
     branches:
       - asbo-matrix
     paths:
-      - '.seed-publish-asbo-matrix-v011b'
+      - '.seed-publish-asbo-matrix-v012'
 
 permissions:
   contents: write
@@ -28,20 +28,235 @@ jobs:
           git fetch origin main:refs/remotes/origin/main
           git diff --quiet origin/main -- latest.json
 
-      - name: Apply editor group update
+      - name: Apply Woo beta Add to Cart compatibility
         shell: bash
         run: |
           set -euo pipefail
-          sed -i 's/Version: 0.1.0/Version: 0.1.1/' matrix/asbo-matrix/asbo-matrix.php
-          sed -i "s/private const VERSION = '0.1.0';/private const VERSION = '0.1.1';/" matrix/asbo-matrix/asbo-matrix.php
           python3 - <<'PY'
-          import json
           from pathlib import Path
-          p = Path('matrix/asbo-matrix/block/block.json')
-          data = json.loads(p.read_text())
-          data['version'] = '0.1.1'
+          import json
+
+          php_path = Path('matrix/asbo-matrix/asbo-matrix.php')
+          php = php_path.read_text()
+          php = php.replace(' * Version: 0.1.1', ' * Version: 0.1.2', 1)
+          php = php.replace("private const VERSION = '0.1.1';", "private const VERSION = '0.1.2';", 1)
+
+          hook_anchor = "        add_filter( 'woocommerce_add_cart_item_data', array( __CLASS__, 'attach_asbo_cart_metadata' ), 20, 4 );\n"
+          store_hook = "        add_filter( 'woocommerce_store_api_add_to_cart_data', array( __CLASS__, 'store_api_add_to_cart_data' ), 20, 2 );\n"
+          if store_hook not in php:
+              if hook_anchor not in php:
+                  raise SystemExit('cart metadata hook anchor not found')
+              php = php.replace(hook_anchor, hook_anchor + store_hook, 1)
+
+          method_anchor = "    private static function fetch_update_manifest( bool $force = false ): ?array {\n"
+          store_method = r'''    /**
+     * WooCommerce's Add to Cart + Options (Beta) block uses the Store API rather
+     * than submitting form.cart. Attach the same ASBO metadata to that request so
+     * production ASBO's existing tier engine prices it identically.
+     */
+    public static function store_api_add_to_cart_data( array $add_to_cart_data, \WP_REST_Request $request ): array {
+        $requested_id = absint( $add_to_cart_data['id'] ?? $request->get_param( 'id' ) );
+        if ( ! $requested_id ) {
+            return $add_to_cart_data;
+        }
+
+        $requested_product = wc_get_product( $requested_id );
+        if ( ! $requested_product instanceof WC_Product ) {
+            return $add_to_cart_data;
+        }
+
+        $variation_id = 0;
+        $parent       = $requested_product;
+        if ( $requested_product instanceof WC_Product_Variation ) {
+            $variation_id = $requested_product->get_id();
+            $parent = wc_get_product( $requested_product->get_parent_id() );
+            if ( ! $parent instanceof WC_Product ) {
+                return $add_to_cart_data;
+            }
+        }
+
+        $matrix = self::parse_pricing_matrix( (string) $parent->get_meta( self::META_PRICING, true ) );
+        if ( empty( $matrix ) ) {
+            return $add_to_cart_data;
+        }
+
+        if ( ! isset( $add_to_cart_data['cart_item_data'] ) || ! is_array( $add_to_cart_data['cart_item_data'] ) ) {
+            $add_to_cart_data['cart_item_data'] = array();
+        }
+
+        // Respect ASBO metadata already supplied by another compatible path.
+        if ( ! empty( $add_to_cart_data['cart_item_data']['asbo']['parent_product_id'] ) ) {
+            return $add_to_cart_data;
+        }
+
+        $decoration = '';
+
+        // Future/custom Store API callers can pass the decoration explicitly.
+        $explicit = $request->get_param( 'asbo_matrix_decoration' );
+        if ( is_string( $explicit ) ) {
+            $explicit = sanitize_text_field( $explicit );
+            if ( isset( $matrix[ $explicit ] ) ) {
+                $decoration = $explicit;
+            }
+        }
+
+        // The Matrix block persists its currently selected method in a short-lived
+        // first-party cookie because Woo's beta Interactivity block does not submit
+        // arbitrary sibling form fields with its Store API request.
+        if ( '' === $decoration ) {
+            $cookie_key = 'asbo_matrix_decoration_' . $parent->get_id();
+            if ( isset( $_COOKIE[ $cookie_key ] ) ) {
+                $cookie_value = sanitize_text_field( wp_unslash( $_COOKIE[ $cookie_key ] ) );
+                if ( isset( $matrix[ $cookie_value ] ) ) {
+                    $decoration = $cookie_value;
+                }
+            }
+        }
+
+        // If no explicit UI choice is available (for example a product collection
+        // add button), use the first configured matrix row. This mirrors the Matrix
+        // block's default selected decoration and keeps matrix-enabled products bulk-priced.
+        if ( '' === $decoration ) {
+            $methods = array_keys( $matrix );
+            $decoration = isset( $methods[0] ) ? (string) $methods[0] : '';
+        }
+
+        if ( '' === $decoration || ! isset( $matrix[ $decoration ] ) ) {
+            return $add_to_cart_data;
+        }
+
+        $sellable = $variation_id > 0 ? $requested_product : $parent;
+        $regular  = (string) $sellable->get_regular_price( 'edit' );
+        $base_unit_price = '' !== $regular && is_numeric( $regular ) ? (float) $regular : null;
+
+        $add_to_cart_data['cart_item_data']['asbo'] = array(
+            'parent_product_id' => $parent->get_id(),
+            'decoration'        => $decoration,
+            'order_group'       => 'product-page-matrix',
+            'base_unit_price'   => $base_unit_price,
+            'source'            => 'asbo-matrix-store-api',
+        );
+
+        return $add_to_cart_data;
+    }
+
+'''
+          if 'public static function store_api_add_to_cart_data' not in php:
+              if method_anchor not in php:
+                  raise SystemExit('update manifest method anchor not found')
+              php = php.replace(method_anchor, store_method + method_anchor, 1)
+
+          php_path.write_text(php)
+
+          js_path = Path('matrix/asbo-matrix/assets/matrix.js')
+          js = js_path.read_text()
+
+          helper_anchor = "    function ensureHidden(form, name, value) {\n"
+          helper = r'''    function setDecorationCookie(productId, value) {
+        if (!productId || !value) return;
+        var key = 'asbo_matrix_decoration_' + String(productId);
+        document.cookie = key + '=' + encodeURIComponent(value) + '; path=/; max-age=7200; SameSite=Lax';
+    }
+
+    function findBetaQuantityInput() {
+        return document.querySelector('.wp-block-woocommerce-add-to-cart-with-options-quantity-selector input.qty, .wp-block-woocommerce-add-to-cart-with-options-quantity-selector input[type="number"]');
+    }
+
+'''
+          if 'function setDecorationCookie' not in js:
+              if helper_anchor not in js:
+                  raise SystemExit('JS helper anchor not found')
+              js = js.replace(helper_anchor, helper + helper_anchor, 1)
+
+          old_sync = r'''        function syncForm() {
+            form = findCartForm(productId);
+            if (!form) return false;
+            ensureHidden(form, 'asbo_matrix_enabled', '1');
+            ensureHidden(form, 'asbo_matrix_product_id', productId);
+            ensureHidden(form, 'asbo_matrix_decoration', selectedDecoration);
+            return true;
+        }
+
+        function currentQuantity() {
+            if (!form) syncForm();
+            if (!form) return 0;
+            var qty = form.querySelector('input.qty, input[name="quantity"]');
+            if (!qty) return 1;
+            return Math.max(0, parseInt(qty.value || '0', 10) || 0);
+        }
+'''
+          new_sync = r'''        function syncForm() {
+            setDecorationCookie(productId, selectedDecoration);
+            form = findCartForm(productId);
+            if (!form) return false;
+            ensureHidden(form, 'asbo_matrix_enabled', '1');
+            ensureHidden(form, 'asbo_matrix_product_id', productId);
+            ensureHidden(form, 'asbo_matrix_decoration', selectedDecoration);
+            return true;
+        }
+
+        function quantityInput() {
+            if (!form) syncForm();
+            if (form) {
+                var classicQty = form.querySelector('input.qty, input[name="quantity"]');
+                if (classicQty) return classicQty;
+            }
+            return findBetaQuantityInput();
+        }
+
+        function currentQuantity() {
+            var qty = quantityInput();
+            if (!qty) return 1;
+            return Math.max(0, parseInt(qty.value || '0', 10) || 0);
+        }
+'''
+          if old_sync not in js:
+              raise SystemExit('sync/currentQuantity JS block not found')
+          js = js.replace(old_sync, new_sync, 1)
+
+          old_bind = r'''        function bindForm() {
+            if (!syncForm()) return false;
+            var qty = form.querySelector('input.qty, input[name="quantity"]');
+            if (qty && !qty.dataset.asboMatrixBound) {
+                qty.dataset.asboMatrixBound = '1';
+                qty.addEventListener('input', updateTier);
+                qty.addEventListener('change', updateTier);
+            }
+            form.addEventListener('submit', syncForm);
+            return true;
+        }
+'''
+          new_bind = r'''        function bindForm() {
+            syncForm();
+            var qty = quantityInput();
+            if (qty && !qty.dataset.asboMatrixBound) {
+                qty.dataset.asboMatrixBound = '1';
+                qty.addEventListener('input', updateTier);
+                qty.addEventListener('change', updateTier);
+            }
+            if (form && !form.dataset.asboMatrixSubmitBound) {
+                form.dataset.asboMatrixSubmitBound = '1';
+                form.addEventListener('submit', syncForm);
+            }
+            return !!(form || qty);
+        }
+'''
+          if old_bind not in js:
+              raise SystemExit('bindForm JS block not found')
+          js = js.replace(old_bind, new_bind, 1)
+
+          # Persist the default immediately, before any Store API Add to Cart click.
+          select_anchor = "        var selectedDecoration = block.getAttribute('data-default-decoration') || Object.keys(matrix)[0];\n"
+          if "setDecorationCookie(productId, selectedDecoration);" not in js.split('function syncForm()',1)[0]:
+              js = js.replace(select_anchor, select_anchor + "        setDecorationCookie(productId, selectedDecoration);\n", 1)
+
+          js_path.write_text(js)
+
+          block_path = Path('matrix/asbo-matrix/block/block.json')
+          data = json.loads(block_path.read_text())
+          data['version'] = '0.1.2'
           data['category'] = 'all-star-embroidery'
-          p.write_text(json.dumps(data, indent=2) + '\n')
+          block_path.write_text(json.dumps(data, indent=2) + '\n')
           PY
 
       - name: Validate source
@@ -53,10 +268,16 @@ jobs:
           node --check matrix/asbo-matrix/assets/matrix.js
           node --check matrix/asbo-matrix/block/editor.js
           python3 -m json.tool matrix/asbo-matrix/block/block.json >/dev/null
-          grep -q 'Version: 0.1.1' matrix/asbo-matrix/asbo-matrix.php
-          grep -q "private const VERSION = '0.1.1'" matrix/asbo-matrix/asbo-matrix.php
-          grep -q '"version": "0.1.1"' matrix/asbo-matrix/block/block.json
+
+          grep -q 'Version: 0.1.2' matrix/asbo-matrix/asbo-matrix.php
+          grep -q "private const VERSION = '0.1.2'" matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'woocommerce_store_api_add_to_cart_data' matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'asbo-matrix-store-api' matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'setDecorationCookie' matrix/asbo-matrix/assets/matrix.js
+          grep -q 'wp-block-woocommerce-add-to-cart-with-options-quantity-selector' matrix/asbo-matrix/assets/matrix.js
+          grep -q '"version": "0.1.2"' matrix/asbo-matrix/block/block.json
           grep -q '"category": "all-star-embroidery"' matrix/asbo-matrix/block/block.json
+
           ! grep -R -E "update_meta_data\(|set_regular_price\(|set_sale_price\(|wc_create_order\(|WC\(\)->cart->add_to_cart" matrix/asbo-matrix
 
       - name: Commit source update
@@ -65,8 +286,8 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add matrix/asbo-matrix/asbo-matrix.php matrix/asbo-matrix/block/block.json
-          git commit -m 'matrix: place block in All Star Embroidery group' || true
+          git add matrix/asbo-matrix/asbo-matrix.php matrix/asbo-matrix/assets/matrix.js matrix/asbo-matrix/block/block.json
+          git commit -m 'matrix: support Woo beta Store API add to cart' || true
           git push origin HEAD:asbo-matrix
 
       - name: Build installable ZIP
@@ -77,10 +298,11 @@ jobs:
           mkdir -p /tmp/asbo-matrix-build/asbo-matrix dist/matrix
           cp -R matrix/asbo-matrix/. /tmp/asbo-matrix-build/asbo-matrix/
           cd /tmp/asbo-matrix-build
-          zip -qr "$GITHUB_WORKSPACE/dist/matrix/asbo-matrix-0.1.1.zip" asbo-matrix
+          zip -qr "$GITHUB_WORKSPACE/dist/matrix/asbo-matrix-0.1.2.zip" asbo-matrix
           cd "$GITHUB_WORKSPACE"
-          unzip -t dist/matrix/asbo-matrix-0.1.1.zip >/dev/null
-          unzip -p dist/matrix/asbo-matrix-0.1.1.zip asbo-matrix/block/block.json | grep -q '"category": "all-star-embroidery"'
+          unzip -t dist/matrix/asbo-matrix-0.1.2.zip >/dev/null
+          unzip -p dist/matrix/asbo-matrix-0.1.2.zip asbo-matrix/asbo-matrix.php | grep -q 'Version: 0.1.2'
+          unzip -p dist/matrix/asbo-matrix-0.1.2.zip asbo-matrix/asbo-matrix.php | grep -q 'woocommerce_store_api_add_to_cart_data'
 
       - name: Publish GitHub Release
         env:
@@ -89,22 +311,28 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/notes.md <<'EOF'
-          # ASBO Matrix v0.1.1
+          # ASBO Matrix v0.1.2
 
-          - Places the ASBO Matrix block inside the existing **All Star Embroidery** block group in the WordPress editor.
-          - No pricing, cart, product, or production ASBO behavior changed.
+          Fixes compatibility with WooCommerce's **Add to Cart + Options (Beta)** / **Product Quantity (Beta)** blocks.
+
+          - Adds ASBO matrix metadata to WooCommerce Store API add-to-cart requests, so the existing production ASBO tier engine applies the correct quantity break.
+          - Keeps classic `form.cart` support unchanged.
+          - Syncs the Matrix active-tier indicator with the Beta quantity input.
+          - Preserves the selected Embroidery/Patch method for Store API requests.
+          - Products without a valid ASBO matrix remain native WooCommerce products and receive no ASBO metadata or pricing changes.
+          - Production ASBO `latest.json` remains untouched.
           EOF
-          if gh release view matrix-v0.1.1 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
-            gh release upload matrix-v0.1.1 dist/matrix/asbo-matrix-0.1.1.zip --clobber --repo All-Star-Embroidery/asbo-releases
+          if gh release view matrix-v0.1.2 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload matrix-v0.1.2 dist/matrix/asbo-matrix-0.1.2.zip --clobber --repo All-Star-Embroidery/asbo-releases
           else
-            gh release create matrix-v0.1.1 dist/matrix/asbo-matrix-0.1.1.zip --repo All-Star-Embroidery/asbo-releases --target asbo-matrix --title 'ASBO Matrix v0.1.1' --notes-file /tmp/notes.md
+            gh release create matrix-v0.1.2 dist/matrix/asbo-matrix-0.1.2.zip --repo All-Star-Embroidery/asbo-releases --target asbo-matrix --title 'ASBO Matrix v0.1.2' --notes-file /tmp/notes.md
           fi
 
       - name: Upload CI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: asbo-matrix-0.1.1
-          path: dist/matrix/asbo-matrix-0.1.1.zip
+          name: asbo-matrix-0.1.2
+          path: dist/matrix/asbo-matrix-0.1.2.zip
           if-no-files-found: error
           retention-days: 30
 
