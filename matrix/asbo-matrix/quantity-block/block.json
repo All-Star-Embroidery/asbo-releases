@@ -2,15 +2,12 @@
   "$schema": "https://schemas.wp.org/trunk/block.json",
   "apiVersion": 3,
   "name": "asbo-matrix/single-product-quantity",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "title": "All Star Single Product Quantity",
   "category": "all-star-embroidery",
   "icon": "plus-alt2",
   "description": "A cart-synced quantity stepper for WooCommerce single products. The number shown is the quantity currently in the cart, and +/- updates the cart automatically.",
   "textdomain": "asbo-matrix",
-  "ancestor": [
-    "woocommerce/add-to-cart-with-options"
-  ],
   "usesContext": [
     "postId",
     "postType"
@@ -23,5 +20,10 @@
     "spacing": {
       "margin": true
     }
-  }
+  },
+  "keywords": [
+    "quantity",
+    "cart",
+    "bulk"
+  ]
 }

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ASBO Matrix
  * Description: Adds the All Star bulk pricing matrix to normal WooCommerce product templates and hands standard product-page cart items into the existing ASBO tier-pricing engine.
- * Version: 0.2.0
+ * Version: 0.2.1
  * Update URI: https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-matrix
  * Author: All Star Embroidery
  * Requires at least: 6.5
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class ASBO_Matrix_Plugin {
-    private const VERSION = '0.2.0';
+    private const VERSION = '0.2.1';
     private const META_PRICING = '_asbo_pricing_matrix';
     private const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/matrix.json';
     private const UPDATE_CACHE_KEY = 'asbo_matrix_update_manifest';
@@ -24,6 +24,7 @@ final class ASBO_Matrix_Plugin {
 
     public static function boot(): void {
         add_action( 'init', array( __CLASS__, 'register_block' ) );
+        add_filter( 'block_categories_all', array( __CLASS__, 'register_block_category' ), 20, 2 );
         add_action( 'woocommerce_blocks_loaded', array( __CLASS__, 'register_store_api_extensions' ) );
         add_action( 'admin_notices', array( __CLASS__, 'dependency_notice' ) );
 
@@ -36,6 +37,21 @@ final class ASBO_Matrix_Plugin {
         add_filter( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'inject_github_update' ) );
         add_filter( 'plugins_api', array( __CLASS__, 'github_plugin_information' ), 20, 3 );
         add_action( 'upgrader_process_complete', array( __CLASS__, 'clear_update_cache_after_upgrade' ), 10, 2 );
+    }
+
+    public static function register_block_category( array $categories, $editor_context ): array {
+        foreach ( $categories as $category ) {
+            if ( isset( $category['slug'] ) && 'all-star-embroidery' === $category['slug'] ) {
+                return $categories;
+            }
+        }
+
+        $categories[] = array(
+            'slug'  => 'all-star-embroidery',
+            'title' => __( 'All Star Embroidery', 'asbo-matrix' ),
+        );
+
+        return $categories;
     }
 
     public static function register_block(): void {
