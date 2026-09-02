@@ -1,0 +1,204 @@
+name: Publish ASBO v1.3.0
+
+on:
+  push:
+    branches:
+      - release-v1.3.0
+    paths:
+      - .seed-publish-v130
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release-v1.3.0
+          fetch-depth: 0
+
+      - name: Build v1.3.0 from the published v1.2.5 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="All-Star-Embroidery/asbo-releases"
+          BASE_VERSION="1.2.5"
+          VERSION="1.3.0"
+          BASE_ZIP="all-star-bulk-order-block-${BASE_VERSION}.zip"
+          ZIP_NAME="all-star-bulk-order-block-${VERSION}.zip"
+          EXPECTED_ROOT="all-star-bulk-order-block-v1.0.0"
+
+          if gh release view "v${VERSION}" -R "$REPO" >/dev/null 2>&1; then
+            echo "Release v${VERSION} already exists; refusing to overwrite it."
+            exit 1
+          fi
+
+          rm -rf /tmp/asbo-v130 /tmp/asbo-v130-verify
+          mkdir -p /tmp/asbo-v130/base /tmp/asbo-v130/unpacked /tmp/asbo-v130/out
+
+          gh release download "v${BASE_VERSION}" -R "$REPO" \
+            --pattern "$BASE_ZIP" \
+            --dir /tmp/asbo-v130/base
+
+          unzip -q "/tmp/asbo-v130/base/$BASE_ZIP" -d /tmp/asbo-v130/unpacked
+
+          ROOT_COUNT="$(find /tmp/asbo-v130/unpacked -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+          test "$ROOT_COUNT" = "1"
+          PLUGIN_ROOT="$(find /tmp/asbo-v130/unpacked -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test "$(basename "$PLUGIN_ROOT")" = "$EXPECTED_ROOT"
+
+          base64 -d staging/v1.3.0/apply_v130.py.gz.b64 | gzip -d > /tmp/asbo-v130/apply_v130.py
+          python /tmp/asbo-v130/apply_v130.py "$PLUGIN_ROOT"
+
+          echo "Validating PHP syntax..."
+          while IFS= read -r -d '' phpfile; do
+            php -l "$phpfile"
+          done < <(find "$PLUGIN_ROOT" -type f -name '*.php' -print0)
+
+          echo "Validating JavaScript and JSON..."
+          node --check "$PLUGIN_ROOT/block/editor.js"
+          python -m json.tool "$PLUGIN_ROOT/block/block.json" >/dev/null
+
+          echo "Running release-regression guards..."
+          grep -q '^ \* Version: 1.3.0$' "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "private const VERSION = '1.3.0';" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q '"version": "1.3.0"' "$PLUGIN_ROOT/block/block.json"
+          grep -q '"category": "all-star-embroidery"' "$PLUGIN_ROOT/block/block.json"
+          grep -q "block_categories_all" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "'slug'  => 'all-star-embroidery'" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q 'grid-template-columns: repeat(3, minmax(105px, 1fr));' "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "data-step-panel=\"1\"" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "data-step-panel=\"2\"" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "setCheckoutProgress" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "_welcome_seen_1" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "Previous artwork · Digitizing + setup waived" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "Choose this if you already have a JPG, PNG, or PDF logo file." "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "shippingSavingsAmount'     => 10" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q '"default": 10' "$PLUGIN_ROOT/block/block.json"
+          grep -q "_asbo_pricing_matrix" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "apply_cart_tier_prices" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "ajax_add_bulk_to_cart" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "SESSION_PROJECT_DETAILS" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "class-asbo-artwork-review.php" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "class-asbo-account-experience.php" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "wp_register_style( 'asbo-account-experience', false, array(), '1.3.0' );" "$PLUGIN_ROOT/includes/class-asbo-account-experience.php"
+
+          if grep -R -E "select_products_text|selectProductsText|stepIntroLabel|introTitle|productionNote" \
+            "$PLUGIN_ROOT/all-star-bulk-order-block.php" \
+            "$PLUGIN_ROOT/block/editor.js" \
+            "$PLUGIN_ROOT/block/block.json"; then
+            echo "Retired Intro attributes are still referenced."
+            exit 1
+          fi
+
+          if grep -R -E "woocommerce_cart_calculate_fees|->add_fee\(" "$PLUGIN_ROOT" --include='*.php'; then
+            echo "Unexpected new WooCommerce cart-fee code detected."
+            exit 1
+          fi
+
+          # Preserve the established integration contract.
+          grep -q "WooCommerce Regular Price is the authoritative" "$PLUGIN_ROOT/all-star-bulk-order-block.php"
+          grep -q "_ase_order_artwork_files" "$PLUGIN_ROOT/includes/class-asbo-artwork-review.php"
+          grep -q "render_dashboard" "$PLUGIN_ROOT/includes/class-asbo-account-experience.php"
+
+          cp RELEASE-1.3.0.md /tmp/asbo-v130/RELEASE-1.3.0.md
+
+          cd /tmp/asbo-v130/unpacked
+          zip -qr "/tmp/asbo-v130/out/$ZIP_NAME" "$EXPECTED_ROOT"
+          cd - >/dev/null
+
+          unzip -t "/tmp/asbo-v130/out/$ZIP_NAME" >/tmp/asbo-v130/zip-test.txt
+          grep -q "No errors detected" /tmp/asbo-v130/zip-test.txt
+          unzip -l "/tmp/asbo-v130/out/$ZIP_NAME" | grep -q "$EXPECTED_ROOT/all-star-bulk-order-block.php"
+          unzip -l "/tmp/asbo-v130/out/$ZIP_NAME" | grep -q "$EXPECTED_ROOT/includes/class-asbo-account-experience.php"
+          unzip -l "/tmp/asbo-v130/out/$ZIP_NAME" | grep -q "$EXPECTED_ROOT/includes/class-asbo-artwork-review.php"
+          unzip -l "/tmp/asbo-v130/out/$ZIP_NAME" | grep -q "$EXPECTED_ROOT/block/block.json"
+          unzip -l "/tmp/asbo-v130/out/$ZIP_NAME" | grep -q "$EXPECTED_ROOT/block/editor.js"
+
+          sha256sum "/tmp/asbo-v130/out/$ZIP_NAME" | tee "/tmp/asbo-v130/out/${ZIP_NAME}.sha256"
+
+      - name: Publish GitHub Release and verify the asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="All-Star-Embroidery/asbo-releases"
+          VERSION="1.3.0"
+          ZIP_NAME="all-star-bulk-order-block-${VERSION}.zip"
+
+          gh release create "v${VERSION}" \
+            "/tmp/asbo-v130/out/$ZIP_NAME" \
+            "/tmp/asbo-v130/out/${ZIP_NAME}.sha256" \
+            -R "$REPO" \
+            --target release-v1.3.0 \
+            --title "ASBO v${VERSION}" \
+            --notes-file /tmp/asbo-v130/RELEASE-1.3.0.md
+
+          gh release view "v${VERSION}" -R "$REPO" --json assets,tagName,name
+          gh release view "v${VERSION}" -R "$REPO" --json assets --jq '.assets[].name' | grep -Fx "$ZIP_NAME"
+
+          mkdir -p /tmp/asbo-v130-verify
+          gh release download "v${VERSION}" -R "$REPO" --pattern "$ZIP_NAME" --dir /tmp/asbo-v130-verify
+          unzip -t "/tmp/asbo-v130-verify/$ZIP_NAME" | grep -q "No errors detected"
+
+      - name: Point the production WordPress updater to v1.3.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="1.3.0"
+          ZIP_NAME="all-star-bulk-order-block-${VERSION}.zip"
+          DOWNLOAD_URL="https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v${VERSION}/${ZIP_NAME}"
+
+          # The release asset has already been created and re-downloaded successfully.
+          cp /tmp/asbo-v130/RELEASE-1.3.0.md /tmp/RELEASE-1.3.0.md
+          git fetch origin main
+          git switch main
+          cp /tmp/RELEASE-1.3.0.md RELEASE-1.3.0.md
+
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          path = Path('latest.json')
+          data = json.loads(path.read_text())
+          data.update({
+              'name': 'All Star Bulk Order Block',
+              'slug': 'all-star-bulk-order-block',
+              'version': '1.3.0',
+              'download_url': 'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/v1.3.0/all-star-bulk-order-block-1.3.0.zip',
+              'homepage': 'https://github.com/All-Star-Embroidery/asbo-releases',
+              'requires': '6.5',
+              'tested': '6.8',
+              'requires_php': '7.4',
+              'last_updated': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000'),
+              'description': 'All Star Embroidery bulk ordering, artwork review, and WooCommerce My Account experience.',
+              'changelog': '<h4>1.3.0</h4><ul><li>Removes the full-page Intro and opens directly on Items, with a concise first-visit New here? popup.</li><li>Uses Items → Artwork → Checkout progress and fixes the frontend progress grid to three columns.</li><li>Moves the block into the All Star Embroidery inserter group with a built-in category fallback.</li><li>Aligns shipping to the current $10 flat-rate reference and recognizes previous approved artwork as already covering digitizing/setup.</li><li>Total Saved now reports real volume savings plus the real shipping saving; ASBO does not introduce or pretend to remove a $15 cart fee.</li><li>Preserves ASBO tier pricing, Supplier Sync boundaries, cart metadata, protected artwork workflow, and the v1.2.5 My Account project hub.</li></ul>'
+          })
+          path.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+
+          python -m json.tool latest.json >/dev/null
+          grep -q '"version": "1.3.0"' latest.json
+          grep -q '/releases/download/v1.3.0/all-star-bulk-order-block-1.3.0.zip' latest.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.json RELEASE-1.3.0.md
+          git commit -m "release: publish ASBO v1.3.0"
+          git push origin main
+
+      - name: Final release checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view v1.3.0 -R All-Star-Embroidery/asbo-releases --json url,assets
+          git show origin/main:latest.json | grep -q '"version": "1.3.0"'
+          git show origin/main:latest.json | grep -q '/releases/download/v1.3.0/all-star-bulk-order-block-1.3.0.zip'
+          echo "ASBO v1.3.0 release + updater verification complete."
