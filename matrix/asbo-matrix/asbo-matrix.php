@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ASBO Matrix
  * Description: Adds the All Star bulk pricing matrix to normal WooCommerce product templates and hands standard product-page cart items into the existing ASBO tier-pricing engine.
- * Version: 0.1.0
+ * Version: 0.1.1
  * Update URI: https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-matrix
  * Author: All Star Embroidery
  * Requires at least: 6.5
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class ASBO_Matrix_Plugin {
-    private const VERSION = '0.1.0';
+    private const VERSION = '0.1.1';
     private const META_PRICING = '_asbo_pricing_matrix';
     private const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/matrix.json';
     private const UPDATE_CACHE_KEY = 'asbo_matrix_update_manifest';

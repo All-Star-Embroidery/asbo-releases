@@ -2,13 +2,16 @@
   "$schema": "https://schemas.wp.org/trunk/block.json",
   "apiVersion": 3,
   "name": "asbo-matrix/pricing",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "title": "ASBO Matrix",
-  "category": "widgets",
+  "category": "all-star-embroidery",
   "icon": "editor-table",
   "description": "Shows All Star bulk per-piece pricing only when the current WooCommerce product has an ASBO pricing matrix.",
   "textdomain": "asbo-matrix",
-  "usesContext": ["postId", "postType"],
+  "usesContext": [
+    "postId",
+    "postType"
+  ],
   "attributes": {
     "heading": {
       "type": "string",
@@ -37,7 +40,10 @@
   },
   "editorScript": "file:./editor.js",
   "supports": {
-    "align": ["wide", "full"],
+    "align": [
+      "wide",
+      "full"
+    ],
     "html": false,
     "spacing": {
       "margin": true,
