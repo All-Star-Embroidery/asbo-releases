@@ -1,12 +1,12 @@
 {
   "name": "ASBO Matrix",
   "slug": "asbo-matrix",
-  "version": "0.1.1",
-  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/matrix-v0.1.1/asbo-matrix-0.1.1.zip",
+  "version": "0.1.2",
+  "download_url": "https://github.com/All-Star-Embroidery/asbo-releases/releases/download/matrix-v0.1.2/asbo-matrix-0.1.2.zip",
   "homepage": "https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-matrix",
   "requires": "6.5",
   "requires_php": "7.4",
-  "last_updated": "2026-09-02 02:27:19 +0000",
+  "last_updated": "2026-09-02 02:34:58 +0000",
   "description": "All Star bulk quantity pricing matrix for normal WooCommerce product templates.",
-  "changelog": "<h4>0.1.1</h4><ul><li>Moves ASBO Matrix into the existing All Star Embroidery block group in the WordPress editor.</li><li>No pricing, cart, product, or production ASBO behavior changed.</li></ul>"
+  "changelog": "<h4>0.1.2</h4><ul><li>Fixes compatibility with WooCommerce Add to Cart + Options (Beta) and Product Quantity (Beta) blocks by attaching ASBO metadata to Store API add-to-cart requests.</li><li>Syncs the Matrix active-tier indicator with WooCommerce's beta quantity input.</li><li>Preserves the selected Embroidery/Patch method for Store API requests.</li><li>Products without a valid ASBO matrix remain native WooCommerce products and receive no ASBO pricing changes.</li></ul>"
 }
