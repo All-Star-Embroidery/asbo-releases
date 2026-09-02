@@ -1,0 +1,71 @@
+name: Inspect ASBO Matrix Source
+
+on:
+  push:
+    branches:
+      - asbo-matrix
+    paths:
+      - '.seed-inspect-asbo-matrix'
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: asbo-matrix
+          fetch-depth: 0
+
+      - name: Download current production ASBO
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-prod
+          mkdir -p /tmp/asbo-prod
+          gh release download v1.2.5 \
+            --repo All-Star-Embroidery/asbo-releases \
+            --pattern 'all-star-bulk-order-block-1.2.5.zip' \
+            --dir /tmp/asbo-prod
+          unzip -q /tmp/asbo-prod/all-star-bulk-order-block-1.2.5.zip -d /tmp/asbo-prod/unpacked
+          find /tmp/asbo-prod/unpacked -maxdepth 3 -type f | sort > /tmp/file-list.txt
+
+      - name: Inspect pricing matrix implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$(find /tmp/asbo-prod/unpacked -mindepth 1 -maxdepth 1 -type d | head -1)"
+          {
+            echo '# Production ASBO Matrix Inspection'
+            echo
+            echo '## Files'
+            cat /tmp/file-list.txt
+            echo
+            echo '## Pricing/meta references'
+            grep -RniE "pricing.?matrix|bulk.?pricing|quantity|tier|10K|10,000|stitch allowance|Decoration method|Patch|Embroidery|META_" "$ROOT" --include='*.php' --include='*.js' --include='*.css' || true
+            echo
+            echo '## Gutenberg block attributes/editor controls'
+            grep -RniE "register_block_type|block.json|InspectorControls|PanelBody|align|full|wide|category" "$ROOT/block" "$ROOT" --include='*.json' --include='*.js' --include='*.php' 2>/dev/null || true
+          } > matrix-inspection.txt
+
+          # Copy the source files most likely to contain the pricing/matrix renderer as text snapshots.
+          mkdir -p matrix-source-snapshots
+          while IFS= read -r file; do
+            rel="${file#$ROOT/}"
+            safe="$(echo "$rel" | tr '/' '__')"
+            cp "$file" "matrix-source-snapshots/$safe.txt"
+          done < <(grep -RliE "pricing.?matrix|10K|10,000|stitch allowance|quantity.*tier|tier.*quantity" "$ROOT" --include='*.php' --include='*.js' --include='*.css' | head -20)
+
+      - name: Commit inspection report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add matrix-inspection.txt matrix-source-snapshots
+          git commit -m 'matrix: inspect production ASBO pricing implementation' || exit 0
+          git push origin HEAD:asbo-matrix
