@@ -1,0 +1,137 @@
+name: Publish ASBO Matrix v0.2.0
+
+on:
+  push:
+    branches:
+      - asbo-matrix
+    paths:
+      - '.seed-publish-asbo-matrix-v020'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Matrix branch
+        uses: actions/checkout@v5
+        with:
+          ref: asbo-matrix
+          fetch-depth: 0
+
+      - name: Protect production ASBO updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          git diff --quiet origin/main -- latest.json
+
+      - name: Apply v0.2.0 quantity update
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 matrix/scripts/build-v020.py
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -l matrix/asbo-matrix/asbo-matrix.php
+          php -l matrix/asbo-matrix/quantity-block/render.php
+          php -l matrix/asbo-matrix/block/editor.asset.php
+          php -l matrix/asbo-matrix/quantity-block/editor.asset.php
+
+          node --check matrix/asbo-matrix/assets/matrix.js
+          node --check matrix/asbo-matrix/block/editor.js
+          node --check matrix/asbo-matrix/quantity-block/editor.js
+          node --input-type=module --check < matrix/asbo-matrix/quantity-block/view.js
+
+          python3 -m json.tool matrix/asbo-matrix/block/block.json >/dev/null
+          python3 -m json.tool matrix/asbo-matrix/quantity-block/block.json >/dev/null
+
+          grep -q 'Version: 0.2.0' matrix/asbo-matrix/asbo-matrix.php
+          grep -q "private const VERSION = '0.2.0'" matrix/asbo-matrix/asbo-matrix.php
+          grep -q "quantity-block" matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'register_store_api_extensions' matrix/asbo-matrix/asbo-matrix.php
+          grep -q "namespace'       => 'asbo_matrix'" matrix/asbo-matrix/asbo-matrix.php
+          grep -q 'asbo-matrix/single-product-quantity' matrix/asbo-matrix/quantity-block/block.json
+          grep -q 'woocommerce/add-to-cart-with-options' matrix/asbo-matrix/quantity-block/block.json
+          grep -q 'quantityToAdd' matrix/asbo-matrix/quantity-block/view.js
+          grep -q 'removeCartItem' matrix/asbo-matrix/quantity-block/view.js
+          grep -q 'asbo-matrix:decoration-change' matrix/asbo-matrix/assets/matrix.js
+
+          ! grep -R -E "update_meta_data\(|set_regular_price\(|set_sale_price\(|wc_create_order\(" matrix/asbo-matrix
+
+      - name: Commit release source to Matrix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add matrix/asbo-matrix matrix/scripts/build-v020.py
+          git commit -m 'matrix: add auto-cart single product quantity block' || true
+          git push origin HEAD:asbo-matrix
+
+      - name: Build installable ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-matrix-build
+          mkdir -p /tmp/asbo-matrix-build/asbo-matrix dist/matrix
+          cp -R matrix/asbo-matrix/. /tmp/asbo-matrix-build/asbo-matrix/
+          cd /tmp/asbo-matrix-build
+          zip -qr "$GITHUB_WORKSPACE/dist/matrix/asbo-matrix-0.2.0.zip" asbo-matrix
+          cd "$GITHUB_WORKSPACE"
+
+          unzip -t dist/matrix/asbo-matrix-0.2.0.zip >/dev/null
+          unzip -p dist/matrix/asbo-matrix-0.2.0.zip asbo-matrix/asbo-matrix.php | grep -q 'Version: 0.2.0'
+          unzip -p dist/matrix/asbo-matrix-0.2.0.zip asbo-matrix/quantity-block/block.json | grep -q 'All Star Single Product Quantity'
+          unzip -p dist/matrix/asbo-matrix-0.2.0.zip asbo-matrix/quantity-block/view.js | grep -q 'quantityToAdd'
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/notes.md <<'EOF'
+          # ASBO Matrix v0.2.0
+
+          Adds the **All Star Single Product Quantity** block for WooCommerce single-product templates.
+
+          - Replaces the awkward two-stage Product Quantity + Add to Cart interaction with one cart-synced stepper.
+          - The number displayed in the control is the quantity currently in the cart for the selected variation and decoration.
+          - Plus automatically adds/increases the cart quantity; minus automatically decreases/removes it. No separate Add to Cart click is required.
+          - Works inside WooCommerce **Add to Cart + Options (Beta)** and follows its selected variation.
+          - Matrix products retain production ASBO quantity-tier pricing and distinguish Embroidery/Patch cart lines through Store API extension data.
+          - Products with no ASBO matrix remain native WooCommerce pricing.
+          - Adds the new block to the existing **All Star Embroidery** editor category.
+          - Does not modify production ASBO `latest.json`.
+          EOF
+
+          if gh release view matrix-v0.2.0 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload matrix-v0.2.0 dist/matrix/asbo-matrix-0.2.0.zip --clobber --repo All-Star-Embroidery/asbo-releases
+          else
+            gh release create matrix-v0.2.0 dist/matrix/asbo-matrix-0.2.0.zip \
+              --repo All-Star-Embroidery/asbo-releases \
+              --target asbo-matrix \
+              --title 'ASBO Matrix v0.2.0' \
+              --notes-file /tmp/notes.md
+          fi
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asbo-matrix-0.2.0
+          path: dist/matrix/asbo-matrix-0.2.0.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final production safety check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          git diff --quiet origin/main -- latest.json
