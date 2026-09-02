@@ -66,14 +66,14 @@ extension_method = r'''    /**
     public static function register_store_api_extensions(): void {
         if (
             ! function_exists( 'woocommerce_store_api_register_endpoint_data' ) ||
-            ! class_exists( '\\Automattic\\WooCommerce\\StoreApi\\Schemas\\V1\\CartItemSchema' )
+            ! class_exists( 'Automattic\WooCommerce\StoreApi\Schemas\V1\CartItemSchema' )
         ) {
             return;
         }
 
         woocommerce_store_api_register_endpoint_data(
             array(
-                'endpoint'        => \\Automattic\\WooCommerce\\StoreApi\\Schemas\\V1\\CartItemSchema::IDENTIFIER,
+                'endpoint'        => \Automattic\WooCommerce\StoreApi\Schemas\V1\CartItemSchema::IDENTIFIER,
                 'namespace'       => 'asbo_matrix',
                 'data_callback'   => static function ( $cart_item ): array {
                     $asbo = isset( $cart_item['asbo'] ) && is_array( $cart_item['asbo'] )
