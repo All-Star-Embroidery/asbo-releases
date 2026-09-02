@@ -43,6 +43,16 @@
         document.cookie = key + '=' + encodeURIComponent(value) + '; path=/; max-age=7200; SameSite=Lax';
     }
 
+    function announceDecoration(productId, value) {
+        if (!productId || !value || typeof window.CustomEvent !== 'function') return;
+        document.dispatchEvent(new CustomEvent('asbo-matrix:decoration-change', {
+            detail: {
+                productId: String(productId),
+                decoration: value
+            }
+        }));
+    }
+
     function findBetaQuantityInput() {
         return document.querySelector('.wp-block-woocommerce-add-to-cart-with-options-quantity-selector input.qty, .wp-block-woocommerce-add-to-cart-with-options-quantity-selector input[type="number"]');
     }
@@ -153,6 +163,7 @@
                 selectedDecoration = input.value;
                 block.setAttribute('data-default-decoration', selectedDecoration);
                 syncForm();
+                announceDecoration(productId, selectedDecoration);
                 updateTier();
             });
         });
@@ -173,6 +184,7 @@
         }
 
         bindForm();
+        announceDecoration(productId, selectedDecoration);
         updateTier();
 
         // Some themes/Woo variation scripts replace or delay the cart form. Rebind

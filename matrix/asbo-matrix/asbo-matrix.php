@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ASBO Matrix
  * Description: Adds the All Star bulk pricing matrix to normal WooCommerce product templates and hands standard product-page cart items into the existing ASBO tier-pricing engine.
- * Version: 0.1.2
+ * Version: 0.2.0
  * Update URI: https://github.com/All-Star-Embroidery/asbo-releases/tree/asbo-matrix
  * Author: All Star Embroidery
  * Requires at least: 6.5
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class ASBO_Matrix_Plugin {
-    private const VERSION = '0.1.2';
+    private const VERSION = '0.2.0';
     private const META_PRICING = '_asbo_pricing_matrix';
     private const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/matrix.json';
     private const UPDATE_CACHE_KEY = 'asbo_matrix_update_manifest';
@@ -24,6 +24,7 @@ final class ASBO_Matrix_Plugin {
 
     public static function boot(): void {
         add_action( 'init', array( __CLASS__, 'register_block' ) );
+        add_action( 'woocommerce_blocks_loaded', array( __CLASS__, 'register_store_api_extensions' ) );
         add_action( 'admin_notices', array( __CLASS__, 'dependency_notice' ) );
 
         // Only product-page submissions explicitly marked by the rendered Matrix block
@@ -38,14 +39,19 @@ final class ASBO_Matrix_Plugin {
     }
 
     public static function register_block(): void {
-        $path = plugin_dir_path( __FILE__ ) . 'block';
-        if ( file_exists( $path . '/block.json' ) ) {
+        $pricing_path = plugin_dir_path( __FILE__ ) . 'block';
+        if ( file_exists( $pricing_path . '/block.json' ) ) {
             register_block_type(
-                $path,
+                $pricing_path,
                 array(
                     'render_callback' => array( __CLASS__, 'render_block' ),
                 )
             );
+        }
+
+        $quantity_path = plugin_dir_path( __FILE__ ) . 'quantity-block';
+        if ( file_exists( $quantity_path . '/block.json' ) ) {
+            register_block_type( $quantity_path );
         }
     }
 
@@ -520,6 +526,58 @@ final class ASBO_Matrix_Plugin {
         );
 
         return $add_to_cart_data;
+    }
+
+    /**
+     * Expose the small amount of ASBO identity data the custom quantity block
+     * needs to distinguish cart lines for the same variation using different
+     * decoration methods. This is public Store API data only; no private order
+     * or customer data is exposed.
+     */
+    public static function register_store_api_extensions(): void {
+        if (
+            ! function_exists( 'woocommerce_store_api_register_endpoint_data' ) ||
+            ! class_exists( 'Automattic\WooCommerce\StoreApi\Schemas\V1\CartItemSchema' )
+        ) {
+            return;
+        }
+
+        woocommerce_store_api_register_endpoint_data(
+            array(
+                'endpoint'        => \Automattic\WooCommerce\StoreApi\Schemas\V1\CartItemSchema::IDENTIFIER,
+                'namespace'       => 'asbo_matrix',
+                'data_callback'   => static function ( $cart_item ): array {
+                    $asbo = isset( $cart_item['asbo'] ) && is_array( $cart_item['asbo'] )
+                        ? $cart_item['asbo']
+                        : array();
+
+                    return array(
+                        'parent_product_id' => absint( $asbo['parent_product_id'] ?? 0 ),
+                        'decoration'        => sanitize_text_field( (string) ( $asbo['decoration'] ?? '' ) ),
+                        'source'            => sanitize_text_field( (string) ( $asbo['source'] ?? '' ) ),
+                    );
+                },
+                'schema_callback' => static function (): array {
+                    return array(
+                        'properties' => array(
+                            'parent_product_id' => array(
+                                'type'     => 'integer',
+                                'readonly' => true,
+                            ),
+                            'decoration' => array(
+                                'type'     => 'string',
+                                'readonly' => true,
+                            ),
+                            'source' => array(
+                                'type'     => 'string',
+                                'readonly' => true,
+                            ),
+                        ),
+                    );
+                },
+                'schema_type'     => ARRAY_A,
+            )
+        );
     }
 
     private static function fetch_update_manifest( bool $force = false ): ?array {
