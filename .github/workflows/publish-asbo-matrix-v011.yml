@@ -1,0 +1,181 @@
+name: Publish ASBO Matrix v0.1.1
+
+on:
+  push:
+    branches:
+      - asbo-matrix
+    paths:
+      - '.seed-publish-asbo-matrix-v011'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Matrix branch
+        uses: actions/checkout@v5
+        with:
+          ref: asbo-matrix
+          fetch-depth: 0
+
+      - name: Safety guard — production ASBO updater unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if ! git diff --quiet origin/main -- latest.json; then
+            echo 'ERROR: ASBO Matrix must not alter production ASBO latest.json.' >&2
+            git diff origin/main -- latest.json
+            exit 1
+          fi
+
+      - name: Move Matrix into All Star Embroidery block group
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          php = Path('matrix/asbo-matrix/asbo-matrix.php')
+          text = php.read_text()
+          text = text.replace(' * Version: 0.1.0', ' * Version: 0.1.1', 1)
+          text = text.replace("private const VERSION = '0.1.0';", "private const VERSION = '0.1.1';", 1)
+
+          boot_anchor = "        add_action( 'init', array( __CLASS__, 'register_block' ) );\n"
+          category_hook = "        add_filter( 'block_categories_all', array( __CLASS__, 'register_all_star_block_category' ), 20, 2 );\n"
+          if category_hook not in text:
+              if boot_anchor not in text:
+                  raise SystemExit('register_block boot anchor not found')
+              text = text.replace(boot_anchor, boot_anchor + category_hook, 1)
+
+          method_anchor = "    public static function register_block(): void {\n"
+          category_method = """    public static function register_all_star_block_category( array $categories, $editor_context = null ): array {
+        foreach ( $categories as $category ) {
+            if ( isset( $category['slug'] ) && 'all-star-embroidery' === $category['slug'] ) {
+                return $categories;
+            }
+        }
+
+        array_unshift(
+            $categories,
+            array(
+                'slug'  => 'all-star-embroidery',
+                'title' => __( 'All Star Embroidery', 'asbo-matrix' ),
+            )
+        );
+
+        return $categories;
+    }
+
+"""
+          if 'register_all_star_block_category' not in text.split(method_anchor, 1)[0]:
+              if method_anchor not in text:
+                  raise SystemExit('register_block method anchor not found')
+              text = text.replace(method_anchor, category_method + method_anchor, 1)
+
+          php.write_text(text)
+
+          block = Path('matrix/asbo-matrix/block/block.json')
+          data = json.loads(block.read_text())
+          data['version'] = '0.1.1'
+          data['category'] = 'all-star-embroidery'
+          block.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -l matrix/asbo-matrix/asbo-matrix.php
+          php -l matrix/asbo-matrix/block/editor.asset.php
+          node --check matrix/asbo-matrix/assets/matrix.js
+          node --check matrix/asbo-matrix/block/editor.js
+          python3 -m json.tool matrix/asbo-matrix/block/block.json >/dev/null
+
+          grep -q "Version: 0.1.1" matrix/asbo-matrix/asbo-matrix.php
+          grep -q "private const VERSION = '0.1.1'" matrix/asbo-matrix/asbo-matrix.php
+          grep -q "block_categories_all" matrix/asbo-matrix/asbo-matrix.php
+          grep -q "register_all_star_block_category" matrix/asbo-matrix/asbo-matrix.php
+          grep -q '"category": "all-star-embroidery"' matrix/asbo-matrix/block/block.json
+          grep -q '"version": "0.1.1"' matrix/asbo-matrix/block/block.json
+          grep -q "'_asbo_pricing_matrix'" matrix/asbo-matrix/asbo-matrix.php
+          grep -q "asbo_matrix_enabled" matrix/asbo-matrix/asbo-matrix.php
+
+          ! grep -R -E "update_meta_data\(|set_regular_price\(|set_sale_price\(|wc_create_order\(|WC\(\)->cart->add_to_cart" matrix/asbo-matrix
+
+      - name: Commit source update to Matrix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add matrix/asbo-matrix/asbo-matrix.php matrix/asbo-matrix/block/block.json
+          git commit -m 'matrix: group block under All Star Embroidery' || true
+          git push origin HEAD:asbo-matrix
+
+      - name: Build installable ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/asbo-matrix-build
+          mkdir -p /tmp/asbo-matrix-build/asbo-matrix dist/matrix
+          cp -R matrix/asbo-matrix/. /tmp/asbo-matrix-build/asbo-matrix/
+          (
+            cd /tmp/asbo-matrix-build
+            zip -qr "$GITHUB_WORKSPACE/dist/matrix/asbo-matrix-0.1.1.zip" asbo-matrix
+          )
+          unzip -t dist/matrix/asbo-matrix-0.1.1.zip >/dev/null
+          unzip -l dist/matrix/asbo-matrix-0.1.1.zip | grep -q 'asbo-matrix/asbo-matrix.php'
+          unzip -p dist/matrix/asbo-matrix-0.1.1.zip asbo-matrix/asbo-matrix.php | grep -q 'Version: 0.1.1'
+          unzip -p dist/matrix/asbo-matrix-0.1.1.zip asbo-matrix/block/block.json | grep -q '"category": "all-star-embroidery"'
+          sha256sum dist/matrix/asbo-matrix-0.1.1.zip
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > /tmp/asbo-matrix-notes.md <<'EOF'
+          # ASBO Matrix v0.1.1
+
+          Small WordPress editor organization update.
+
+          - Moves **ASBO Matrix** from the generic Widgets category into the **All Star Embroidery** block group.
+          - Registers the All Star Embroidery category itself only when another All Star plugin/theme has not already registered it.
+          - Does not change matrix rendering, pricing, cart metadata, product behavior, or production ASBO.
+          EOF
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view matrix-v0.1.1 --repo All-Star-Embroidery/asbo-releases >/dev/null 2>&1; then
+            gh release upload matrix-v0.1.1 dist/matrix/asbo-matrix-0.1.1.zip --clobber --repo All-Star-Embroidery/asbo-releases
+          else
+            gh release create matrix-v0.1.1 \
+              dist/matrix/asbo-matrix-0.1.1.zip \
+              --repo All-Star-Embroidery/asbo-releases \
+              --target asbo-matrix \
+              --title 'ASBO Matrix v0.1.1' \
+              --notes-file /tmp/asbo-matrix-notes.md
+          fi
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asbo-matrix-0.1.1
+          path: dist/matrix/asbo-matrix-0.1.1.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final production safety check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          git diff --quiet origin/main -- latest.json
+          echo 'ASBO Matrix 0.1.1 released; production ASBO latest.json remains untouched.'
