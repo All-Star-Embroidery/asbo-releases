@@ -1,0 +1,331 @@
+(function (blocks, blockEditor, components, element, i18n) {
+  const el = element.createElement;
+  const { registerBlockType } = blocks;
+  const { RichText, InspectorControls, useBlockProps, ColorPalette } = blockEditor;
+  const {
+    PanelBody,
+    TextControl,
+    RangeControl,
+    Notice,
+    Button,
+    ButtonGroup,
+    BaseControl,
+    __experimentalNumberControl: NumberControl
+  } = components;
+  const { useState } = element;
+  const { __ } = i18n;
+
+  const palette = [
+    { name: __('All Star Navy', 'all-star-bulk-order'), color: '#11192d' },
+    { name: __('All Star Gold', 'all-star-bulk-order'), color: '#f3bd2f' },
+    { name: __('White', 'all-star-bulk-order'), color: '#ffffff' },
+    { name: __('Ink', 'all-star-bulk-order'), color: '#182033' },
+    { name: __('Muted', 'all-star-bulk-order'), color: '#687184' },
+    { name: __('Light Gray', 'all-star-bulk-order'), color: '#f7f8fb' },
+    { name: __('Border', 'all-star-bulk-order'), color: '#e2e6ed' }
+  ];
+
+  function colorControl(label, value, onChange) {
+    return el(
+      BaseControl,
+      { label: label, className: 'asbo-editor-color-control' },
+      el(ColorPalette, {
+        colors: palette,
+        value: value,
+        clearable: false,
+        disableCustomColors: false,
+        onChange: onChange
+      }),
+      el(TextControl, {
+        value: value || '',
+        onChange: onChange,
+        placeholder: '#000000'
+      })
+    );
+  }
+
+  function textField(label, key, a, set, help) {
+    return el(TextControl, {
+      label: label,
+      help: help || '',
+      value: a[key] || '',
+      onChange: function (value) { const next = {}; next[key] = value; set(next); }
+    });
+  }
+
+  registerBlockType('all-star/bulk-order', {
+    edit: function (props) {
+      const a = props.attributes;
+      const set = props.setAttributes;
+      const [previewStep, setPreviewStep] = useState(1);
+      const blockProps = useBlockProps({
+        className: 'asbo-editor',
+        style: {
+          '--asbo-editor-primary': a.primaryColor,
+          '--asbo-editor-primary-hover': a.primaryHoverColor,
+          '--asbo-editor-primary-text': a.primaryTextColor,
+          '--asbo-editor-navy': a.navyColor,
+          '--asbo-editor-text': a.textColor,
+          '--asbo-editor-muted': a.mutedColor,
+          '--asbo-editor-border': a.borderColor,
+          '--asbo-editor-surface': a.surfaceColor,
+          '--asbo-editor-bg': a.pageBackground,
+          '--asbo-editor-sticky-bg': a.stickyBackground,
+          '--asbo-editor-sticky-text': a.stickyTextColor,
+          '--asbo-editor-inactive': a.progressInactiveColor,
+          '--asbo-editor-button-radius': (a.buttonRadius || 0) + 'px',
+          '--asbo-editor-card-radius': (a.cardRadius || 0) + 'px'
+        }
+      });
+
+      const steps = [
+        { number: 1, label: a.stepIntroLabel || 'Intro' },
+        { number: 2, label: a.stepItemsLabel || 'Items' },
+        { number: 3, label: a.stepArtworkLabel || 'Artwork' },
+        { number: 4, label: a.stepCheckoutLabel || 'Checkout' }
+      ];
+
+      const sidebar = el(
+        InspectorControls,
+        {},
+        el(
+          PanelBody,
+          { title: __('Editor preview', 'all-star-bulk-order'), initialOpen: true },
+          el('p', { className: 'components-base-control__help' },
+            __('Choose which workflow page is visible in the editor. This does not change what customers see first.', 'all-star-bulk-order')
+          ),
+          el(ButtonGroup, { className: 'asbo-editor__preview-buttons' },
+            steps.map(function (step) {
+              return el(Button, {
+                key: step.number,
+                variant: previewStep === step.number ? 'primary' : 'secondary',
+                onClick: function () { setPreviewStep(step.number); }
+              }, String(step.number) + ' ' + step.label);
+            })
+          )
+        ),
+        el(
+          PanelBody,
+          { title: __('Product source', 'all-star-bulk-order'), initialOpen: false },
+          el(TextControl, {
+            label: __('WooCommerce category slug', 'all-star-bulk-order'),
+            help: __('Leave blank to show every enabled bulk-order product.', 'all-star-bulk-order'),
+            value: a.category,
+            onChange: function (value) { set({ category: value }); }
+          }),
+          el(RangeControl, {
+            label: __('Maximum products', 'all-star-bulk-order'),
+            value: a.limit,
+            min: 1,
+            max: 200,
+            onChange: function (value) { set({ limit: value || 100 }); }
+          })
+        ),
+        el(
+          PanelBody,
+          { title: __('Progress bar', 'all-star-bulk-order'), initialOpen: false },
+          textField(__('Step 1 label', 'all-star-bulk-order'), 'stepIntroLabel', a, set),
+          textField(__('Step 2 label', 'all-star-bulk-order'), 'stepItemsLabel', a, set),
+          textField(__('Step 3 label', 'all-star-bulk-order'), 'stepArtworkLabel', a, set),
+          textField(__('Step 4 label', 'all-star-bulk-order'), 'stepCheckoutLabel', a, set),
+          colorControl(__('Active step color', 'all-star-bulk-order'), a.primaryColor, function (value) { set({ primaryColor: value }); }),
+          colorControl(__('Completed step color', 'all-star-bulk-order'), a.navyColor, function (value) { set({ navyColor: value }); }),
+          colorControl(__('Inactive step text', 'all-star-bulk-order'), a.progressInactiveColor, function (value) { set({ progressInactiveColor: value }); })
+        ),
+        el(
+          PanelBody,
+          { title: __('Buttons', 'all-star-bulk-order'), initialOpen: false },
+          textField(__('Step 1 button', 'all-star-bulk-order'), 'selectProductsText', a, set),
+          textField(__('Step 2 button', 'all-star-bulk-order'), 'nextArtworkText', a, set),
+          textField(__('Checkout button', 'all-star-bulk-order'), 'continueCheckoutText', a, set),
+          textField(__('Back button', 'all-star-bulk-order'), 'backText', a, set),
+          colorControl(__('Button background', 'all-star-bulk-order'), a.primaryColor, function (value) { set({ primaryColor: value }); }),
+          colorControl(__('Button hover background', 'all-star-bulk-order'), a.primaryHoverColor, function (value) { set({ primaryHoverColor: value }); }),
+          colorControl(__('Button text', 'all-star-bulk-order'), a.primaryTextColor, function (value) { set({ primaryTextColor: value }); }),
+          el(RangeControl, {
+            label: __('Button corner radius', 'all-star-bulk-order'),
+            value: a.buttonRadius,
+            min: 0,
+            max: 30,
+            onChange: function (value) { set({ buttonRadius: value || 0 }); }
+          })
+        ),
+        el(
+          PanelBody,
+          { title: __('Bottom summary bar', 'all-star-bulk-order'), initialOpen: false },
+          textField(__('Total label', 'all-star-bulk-order'), 'estimatedTotalLabel', a, set),
+          textField(__('Quantity label', 'all-star-bulk-order'), 'piecesSelectedLabel', a, set),
+          textField(__('Savings label', 'all-star-bulk-order'), 'totalSavedLabel', a, set),
+          textField(__('Product-row total label', 'all-star-bulk-order'), 'productTotalLabel', a, set, __('Clarifies that the amount beside each product is the selected line total, not the starting unit price.', 'all-star-bulk-order')),
+          textField(__('Digitizing incentive text', 'all-star-bulk-order'), 'digitizingIncentiveText', a, set),
+          el(RangeControl, {
+            label: __('Digitizing threshold', 'all-star-bulk-order'),
+            value: a.freeArtQty,
+            min: 1,
+            max: 500,
+            onChange: function (value) { set({ freeArtQty: value || 1 }); }
+          }),
+          textField(__('Shipping incentive text', 'all-star-bulk-order'), 'shippingIncentiveText', a, set),
+          el(RangeControl, {
+            label: __('Shipping threshold', 'all-star-bulk-order'),
+            value: a.freeShipQty,
+            min: 1,
+            max: 500,
+            onChange: function (value) { set({ freeShipQty: value || 1 }); }
+          }),
+          el(RangeControl, {
+            label: __('Digitizing savings value ($)', 'all-star-bulk-order'),
+            value: a.digitizingSavingsAmount,
+            min: 0,
+            max: 100,
+            step: 1,
+            onChange: function (value) { set({ digitizingSavingsAmount: Number(value || 0) }); }
+          }),
+          el(RangeControl, {
+            label: __('Shipping savings value ($)', 'all-star-bulk-order'),
+            value: a.shippingSavingsAmount,
+            min: 0,
+            max: 100,
+            step: 0.01,
+            onChange: function (value) { set({ shippingSavingsAmount: Number(value || 0) }); }
+          }),
+          colorControl(__('Bar background', 'all-star-bulk-order'), a.stickyBackground, function (value) { set({ stickyBackground: value }); }),
+          colorControl(__('Bar text', 'all-star-bulk-order'), a.stickyTextColor, function (value) { set({ stickyTextColor: value }); })
+        ),
+        el(
+          PanelBody,
+          { title: __('Page colors and shape', 'all-star-bulk-order'), initialOpen: false },
+          colorControl(__('Page background', 'all-star-bulk-order'), a.pageBackground, function (value) { set({ pageBackground: value }); }),
+          colorControl(__('Heading / navy', 'all-star-bulk-order'), a.navyColor, function (value) { set({ navyColor: value }); }),
+          colorControl(__('Body text', 'all-star-bulk-order'), a.textColor, function (value) { set({ textColor: value }); }),
+          colorControl(__('Muted text', 'all-star-bulk-order'), a.mutedColor, function (value) { set({ mutedColor: value }); }),
+          colorControl(__('Borders', 'all-star-bulk-order'), a.borderColor, function (value) { set({ borderColor: value }); }),
+          colorControl(__('Soft surface', 'all-star-bulk-order'), a.surfaceColor, function (value) { set({ surfaceColor: value }); }),
+          el(RangeControl, {
+            label: __('Panel corner radius', 'all-star-bulk-order'),
+            value: a.cardRadius,
+            min: 0,
+            max: 30,
+            onChange: function (value) { set({ cardRadius: value || 0 }); }
+          })
+        ),
+        el(
+          PanelBody,
+          { title: __('Checkout step', 'all-star-bulk-order'), initialOpen: false },
+          textField(__('Checkout preview heading', 'all-star-bulk-order'), 'checkoutTitle', a, set),
+          textField(__('Checkout preview text', 'all-star-bulk-order'), 'checkoutText', a, set)
+        )
+      );
+
+      function rich(tag, key, className, placeholder) {
+        return el(RichText, {
+          tagName: tag,
+          className: className || '',
+          value: a[key],
+          allowedFormats: [],
+          onChange: function (value) { const next = {}; next[key] = value; set(next); },
+          placeholder: placeholder
+        });
+      }
+
+      let preview;
+      if (previewStep === 1) {
+        preview = el('section', { className: 'asbo-editor__intro' },
+          rich('h2', 'introTitle', '', __('Intro headline…', 'all-star-bulk-order')),
+          rich('p', 'introText', '', __('Introductory copy…', 'all-star-bulk-order')),
+          rich('p', 'productionNote', 'asbo-editor__note', __('Production note…', 'all-star-bulk-order')),
+          el('div', { className: 'asbo-editor__benefits' },
+            ['Products and colors', 'Decoration method', 'Artwork and deadline'].map(function (label) {
+              return el('div', { key: label }, el('span', {}, '✓'), el('strong', {}, label));
+            })
+          )
+        );
+      } else if (previewStep === 2) {
+        preview = el('section', { className: 'asbo-editor__section' },
+          rich('h3', 'productsTitle'),
+          rich('p', 'productsText'),
+          el(Notice, { status: 'info', isDismissible: false },
+            __('This preview uses sample rows. Live WooCommerce products, colors, inventory, and prices render on the website.', 'all-star-bulk-order')
+          ),
+          el('p', { className: 'asbo-editor__stitch-note' },
+            el('strong', {}, __('10K stitch allowance: ', 'all-star-bulk-order')),
+            __('Includes embroidery up to 10,000 stitches. Additional charges may apply for larger or more complex designs.', 'all-star-bulk-order')
+          ),
+          ['Richardson 112 Trucker Snapback', 'Port Authority Silk Touch Polo', 'Sport-Tek Competitor Tee'].map(function (name, index) {
+            return el('div', { className: 'asbo-editor__product-row', key: name },
+              el('span', { className: 'asbo-editor__product-image' }),
+              el('div', {}, el('strong', {}, name), el('small', {}, index ? 'No pieces selected' : '12 pieces selected')),
+              el('span', { className: 'asbo-editor__row-total' },
+                el('small', {}, a.productTotalLabel || 'Selected total'),
+                el('strong', {}, index ? '$0.00' : '$324.00')
+              ),
+              el('span', { className: 'asbo-editor__plus' }, '+')
+            );
+          })
+        );
+      } else if (previewStep === 3) {
+        preview = el('section', { className: 'asbo-editor__section' },
+          rich('h3', 'artworkTitle'),
+          rich('p', 'artworkText'),
+          el('div', { className: 'asbo-editor__artwork-grid' },
+            el('div', { className: 'asbo-editor__artwork-main' },
+              el('div', { className: 'asbo-editor__stitch-allowance' },
+                el('strong', {}, __('10K Stitch Allowance', 'all-star-bulk-order')),
+                el('p', {}, __('Standard embroidery pricing includes designs up to 10,000 stitches. Larger or more detailed artwork may exceed this allowance. If an additional embroidery charge is required, we will review your artwork and contact you before production.', 'all-star-bulk-order'))
+              ),
+              el('strong', {}, __('How will you provide artwork?', 'all-star-bulk-order')),
+              ['Upload after checkout', 'Use artwork from a previous order', 'I need artwork or digitizing help'].map(function (label, index) {
+                return el('div', { className: 'asbo-editor__option', key: label },
+                  el('span', { className: index === 0 ? 'is-selected' : '' }),
+                  el('div', {}, el('strong', {}, label), el('small', {}, __('Customer-facing option text remains protected in the workflow.', 'all-star-bulk-order')))
+                );
+              })
+            ),
+            el('aside', { className: 'asbo-editor__review' },
+              el('strong', {}, __('Production order review', 'all-star-bulk-order')),
+              el('p', {}, __('Selected products and the estimated total appear here.', 'all-star-bulk-order'))
+            )
+          )
+        );
+      } else {
+        preview = el('section', { className: 'asbo-editor__section asbo-editor__checkout' },
+          rich('h3', 'checkoutTitle'),
+          rich('p', 'checkoutText'),
+          el('div', { className: 'asbo-editor__checkout-panel' },
+            el('span', { className: 'dashicons dashicons-cart' }),
+            el('strong', {}, a.continueCheckoutText || 'Continue to Checkout'),
+            el('small', {}, __('Checkout itself is rendered by WooCommerce, so payment and shipping remain secure and maintainable.', 'all-star-bulk-order'))
+          )
+        );
+      }
+
+      return el(
+        'div',
+        blockProps,
+        sidebar,
+        el('div', { className: 'asbo-editor__stepper' },
+          steps.map(function(step) {
+            return el(Button, {
+              key: step.number,
+              className: (previewStep === step.number ? 'is-active ' : '') + (previewStep > step.number ? 'is-complete' : ''),
+              onClick: function () { setPreviewStep(step.number); }
+            },
+              el('span', {}, String(step.number)),
+              el('strong', {}, step.label)
+            );
+          })
+        ),
+        preview,
+        el('div', { className: 'asbo-editor__sticky-preview' },
+          el('div', {}, el('small', {}, a.estimatedTotalLabel), el('strong', {}, '$0.00')),
+          el('div', {}, el('small', {}, a.piecesSelectedLabel), el('strong', {}, '0')),
+          el('div', {}, el('small', {}, a.totalSavedLabel || 'Total Saved'), el('strong', {}, '$0.00')),
+          el('span', {}, String(a.freeArtQty) + '+ ' + a.digitizingIncentiveText),
+          el('span', {}, String(a.freeShipQty) + '+ ' + a.shippingIncentiveText),
+          el('button', { type: 'button', disabled: true }, previewStep < 2 ? a.selectProductsText : previewStep < 3 ? a.nextArtworkText : a.continueCheckoutText)
+        )
+      );
+    },
+    save: function () { return null; }
+  });
+})(window.wp.blocks, window.wp.blockEditor, window.wp.components, window.wp.element, window.wp.i18n);

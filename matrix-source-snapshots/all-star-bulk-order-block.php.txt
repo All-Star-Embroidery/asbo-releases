@@ -1,0 +1,5049 @@
+<?php
+/**
+ * Plugin Name: All Star Bulk Order Block
+ * Description: Gutenberg block version of the All Star Embroidery bulk-order workflow.
+ * Version: 1.2.5
+ * Update URI: https://github.com/All-Star-Embroidery/asbo-releases
+ * Author: All Star Embroidery
+ * Requires Plugins: woocommerce
+ * Text Domain: all-star-bulk-order
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+final class ASBO_Plugin {
+    private const VERSION = '1.2.5';
+    private const META_ENABLED = '_asbo_enabled';
+    private const META_DISPLAY_NAME = '_asbo_display_name';
+    private const META_DESCRIPTION = '_asbo_short_description';
+    private const META_SIZE_CHART = '_asbo_size_chart';
+    private const META_PRICING = '_asbo_pricing_matrix';
+    private const SESSION_PROJECT_DETAILS = 'asbo_project_details';
+
+    private const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/All-Star-Embroidery/asbo-releases/main/latest.json';
+    private const UPDATE_CACHE_KEY = 'asbo_github_update_manifest';
+    private const UPDATE_CACHE_TTL = 1800;
+
+    public static function boot(): void {
+        if ( did_action( 'plugins_loaded' ) ) {
+            self::init();
+            return;
+        }
+
+        add_action( 'plugins_loaded', array( __CLASS__, 'init' ) );
+    }
+
+    public static function init(): void {
+        self::register_update_hooks();
+
+        if ( ! class_exists( 'WooCommerce' ) ) {
+            add_action( 'admin_notices', array( __CLASS__, 'woocommerce_required_notice' ) );
+            return;
+        }
+
+        add_shortcode( 'asbo_bulk_order', array( __CLASS__, 'shortcode' ) );
+        add_action( 'init', array( __CLASS__, 'register_block' ) );
+        add_action( 'init', array( __CLASS__, 'repair_catalog_titles' ) );
+
+        add_action( 'woocommerce_product_options_general_product_data', array( __CLASS__, 'product_fields' ) );
+        add_action( 'woocommerce_admin_process_product_object', array( __CLASS__, 'save_product_fields' ) );
+
+        add_action( 'wp_ajax_asbo_add_bulk_to_cart', array( __CLASS__, 'ajax_add_bulk_to_cart' ) );
+        add_action( 'wp_ajax_nopriv_asbo_add_bulk_to_cart', array( __CLASS__, 'ajax_add_bulk_to_cart' ) );
+
+        add_action( 'woocommerce_before_calculate_totals', array( __CLASS__, 'apply_cart_tier_prices' ), 20 );
+        add_filter( 'woocommerce_get_item_data', array( __CLASS__, 'display_cart_item_data' ), 10, 2 );
+        add_action( 'woocommerce_checkout_create_order_line_item', array( __CLASS__, 'copy_line_item_meta' ), 10, 4 );
+        add_action( 'woocommerce_checkout_create_order', array( __CLASS__, 'copy_project_details_to_order' ), 10, 2 );
+        add_action( 'woocommerce_thankyou', array( __CLASS__, 'clear_project_details_session' ) );
+    }
+
+    private static function register_update_hooks(): void {
+        add_filter( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'inject_github_update' ) );
+        add_filter( 'plugins_api', array( __CLASS__, 'github_plugin_information' ), 20, 3 );
+        add_filter( 'auto_update_plugin', array( __CLASS__, 'enable_github_auto_update' ), 20, 2 );
+        add_action( 'upgrader_process_complete', array( __CLASS__, 'clear_update_cache_after_upgrade' ), 10, 2 );
+    }
+
+    private static function plugin_file(): string {
+        return __FILE__;
+    }
+
+    private static function plugin_basename(): string {
+        return plugin_basename( self::plugin_file() );
+    }
+
+    private static function fetch_update_manifest( bool $force = false ): ?array {
+        if ( ! $force ) {
+            $cached = get_site_transient( self::UPDATE_CACHE_KEY );
+            if ( is_array( $cached ) ) {
+                return $cached;
+            }
+        }
+
+        $response = wp_remote_get(
+            self::UPDATE_MANIFEST_URL,
+            array(
+                'timeout'    => 8,
+                'sslverify'  => true,
+                'user-agent' => 'All-Star-Bulk-Order/' . self::VERSION . '; ' . home_url( '/' ),
+                'headers'    => array( 'Accept' => 'application/json' ),
+            )
+        );
+
+        if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+            return null;
+        }
+
+        $manifest = json_decode( wp_remote_retrieve_body( $response ), true );
+        if ( ! is_array( $manifest ) || empty( $manifest['version'] ) || empty( $manifest['download_url'] ) ) {
+            return null;
+        }
+
+        $manifest['version']      = sanitize_text_field( $manifest['version'] );
+        $manifest['download_url'] = esc_url_raw( $manifest['download_url'] );
+        $manifest['homepage']     = isset( $manifest['homepage'] ) ? esc_url_raw( $manifest['homepage'] ) : '';
+
+        set_site_transient( self::UPDATE_CACHE_KEY, $manifest, self::UPDATE_CACHE_TTL );
+        return $manifest;
+    }
+
+    public static function inject_github_update( $transient ) {
+        if ( ! is_object( $transient ) ) {
+            return $transient;
+        }
+
+        $manifest = self::fetch_update_manifest();
+        if ( ! $manifest || version_compare( self::VERSION, $manifest['version'], '>=' ) ) {
+            return $transient;
+        }
+
+        $update = (object) array(
+            'slug'         => 'all-star-bulk-order-block',
+            'plugin'       => self::plugin_basename(),
+            'new_version'  => $manifest['version'],
+            'url'          => $manifest['homepage'] ?? '',
+            'package'      => $manifest['download_url'],
+            'icons'        => array(),
+            'banners'      => array(),
+            'tested'       => $manifest['tested'] ?? '',
+            'requires_php' => $manifest['requires_php'] ?? '',
+        );
+
+        if ( ! isset( $transient->response ) || ! is_array( $transient->response ) ) {
+            $transient->response = array();
+        }
+
+        $transient->response[ self::plugin_basename() ] = $update;
+        return $transient;
+    }
+
+    public static function github_plugin_information( $result, string $action, $args ) {
+        if ( 'plugin_information' !== $action || empty( $args->slug ) || 'all-star-bulk-order-block' !== $args->slug ) {
+            return $result;
+        }
+
+        $manifest = self::fetch_update_manifest();
+        if ( ! $manifest ) {
+            return $result;
+        }
+
+        return (object) array(
+            'name'          => 'All Star Bulk Order Block',
+            'slug'          => 'all-star-bulk-order-block',
+            'version'       => $manifest['version'],
+            'author'        => '<a href="https://allstaremb.com">All Star Embroidery</a>',
+            'homepage'      => $manifest['homepage'] ?? '',
+            'requires'      => $manifest['requires'] ?? '',
+            'tested'        => $manifest['tested'] ?? '',
+            'requires_php'  => $manifest['requires_php'] ?? '',
+            'last_updated'  => $manifest['last_updated'] ?? '',
+            'download_link' => $manifest['download_url'],
+            'sections'      => array(
+                'description' => $manifest['description'] ?? 'All Star Embroidery bulk-order workflow.',
+                'changelog'   => $manifest['changelog'] ?? '',
+            ),
+        );
+    }
+
+    public static function enable_github_auto_update( bool $update, $item ): bool {
+        $plugin = is_object( $item ) && isset( $item->plugin ) ? (string) $item->plugin : '';
+        return self::plugin_basename() === $plugin ? true : $update;
+    }
+
+    public static function clear_update_cache_after_upgrade( $upgrader, array $hook_extra ): void {
+        if ( 'plugin' !== ( $hook_extra['type'] ?? '' ) ) {
+            return;
+        }
+
+        $plugins = $hook_extra['plugins'] ?? array();
+        if ( isset( $hook_extra['plugin'] ) ) {
+            $plugins[] = $hook_extra['plugin'];
+        }
+
+        if ( in_array( self::plugin_basename(), (array) $plugins, true ) ) {
+            delete_site_transient( self::UPDATE_CACHE_KEY );
+        }
+    }
+
+    public static function woocommerce_required_notice(): void {
+        echo '<div class="notice notice-error"><p><strong>All Star Bulk Order</strong> requires WooCommerce to be installed and active.</p></div>';
+    }
+
+    public static function product_fields(): void {
+        echo '<div class="options_group">';
+
+        woocommerce_wp_checkbox(
+            array(
+                'id'          => self::META_ENABLED,
+                'label'       => __( 'Show in bulk order page', 'all-star-bulk-order' ),
+                'description' => __( 'Displays this product in the accordion bulk-order experience.', 'all-star-bulk-order' ),
+            )
+        );
+
+        woocommerce_wp_text_input(
+            array(
+                'id'          => self::META_DISPLAY_NAME,
+                'label'       => __( 'Bulk order display name', 'all-star-bulk-order' ),
+                'description' => __( 'Optional title override for the bulk-order page. Leave blank to use the WooCommerce product name.', 'all-star-bulk-order' ),
+                'desc_tip'    => true,
+            )
+        );
+
+        woocommerce_wp_textarea_input(
+            array(
+                'id'          => self::META_DESCRIPTION,
+                'label'       => __( 'Bulk order description', 'all-star-bulk-order' ),
+                'description' => __( 'A short description shown beside the featured image.', 'all-star-bulk-order' ),
+                'desc_tip'    => true,
+            )
+        );
+
+        woocommerce_wp_textarea_input(
+            array(
+                'id'          => self::META_SIZE_CHART,
+                'label'       => __( 'Size chart / product specs', 'all-star-bulk-order' ),
+                'description' => __( 'Basic HTML is allowed. This appears in a collapsible section.', 'all-star-bulk-order' ),
+                'desc_tip'    => true,
+            )
+        );
+
+        woocommerce_wp_textarea_input(
+            array(
+                'id'          => self::META_PRICING,
+                'label'       => __( 'Tiered pricing matrix', 'all-star-bulk-order' ),
+                'description' => __( 'One decoration type per line. Example: Embroidery|1:32,12:27,24:24,48:22,96:20', 'all-star-bulk-order' ),
+                'desc_tip'    => true,
+                'placeholder' => "Embroidery|1:32,12:27,24:24,48:22,96:20\nPatch|1:35,12:30,24:27,48:25,96:23",
+            )
+        );
+
+        echo '</div>';
+    }
+
+    public static function save_product_fields( WC_Product $product ): void {
+        $enabled = isset( $_POST[ self::META_ENABLED ] ) ? 'yes' : 'no';
+        $product->update_meta_data( self::META_ENABLED, $enabled );
+
+        if ( isset( $_POST[ self::META_DISPLAY_NAME ] ) ) {
+            $product->update_meta_data(
+                self::META_DISPLAY_NAME,
+                sanitize_text_field( wp_unslash( $_POST[ self::META_DISPLAY_NAME ] ) )
+            );
+        }
+
+        if ( isset( $_POST[ self::META_DESCRIPTION ] ) ) {
+            $product->update_meta_data(
+                self::META_DESCRIPTION,
+                sanitize_textarea_field( wp_unslash( $_POST[ self::META_DESCRIPTION ] ) )
+            );
+        }
+
+        if ( isset( $_POST[ self::META_SIZE_CHART ] ) ) {
+            $product->update_meta_data(
+                self::META_SIZE_CHART,
+                wp_kses_post( wp_unslash( $_POST[ self::META_SIZE_CHART ] ) )
+            );
+        }
+
+        if ( isset( $_POST[ self::META_PRICING ] ) ) {
+            $raw = sanitize_textarea_field( wp_unslash( $_POST[ self::META_PRICING ] ) );
+            $product->update_meta_data( self::META_PRICING, $raw );
+        }
+    }
+
+    public static function repair_catalog_titles(): void {
+        $repair_version = '2';
+        if ( get_option( 'asbo_catalog_title_repair_version' ) === $repair_version ) {
+            return;
+        }
+
+        $catalog = array(
+            'PC54' => 'Port & Company Core Cotton Tee',
+            'PC54LS' => 'Port & Company Long Sleeve Core Cotton Tee',
+            'PC61' => 'Port & Company Essential Tee',
+            'PC61LS' => 'Port & Company Long Sleeve Essential Tee',
+            'K500' => 'Port Authority Silk Touch Polo',
+            'L500' => 'Port Authority Ladies Silk Touch Polo',
+            'K500P' => 'Port Authority Silk Touch Polo with Pocket',
+            'LPC54' => 'Port & Company Ladies Core Cotton Tee',
+            'ST350' => 'Sport-Tek Competitor Tee',
+            'ST350LS' => 'Sport-Tek Long Sleeve Competitor Tee',
+            'LST350' => 'Sport-Tek Ladies Competitor Tee',
+            'ST650' => 'Sport-Tek Micropique Sport-Wick Polo',
+            'LST650' => 'Sport-Tek Ladies Micropique Sport-Wick Polo',
+            'DT104' => 'District Very Important Tee',
+            'DT6000' => 'District Perfect Tri Tee',
+            'J317' => 'Port Authority Core Soft Shell Jacket',
+            'L317' => 'Port Authority Ladies Core Soft Shell Jacket',
+            'PC78H' => 'Port & Company Core Fleece Pullover Hooded Sweatshirt',
+            'PC78' => 'Port & Company Core Fleece Crewneck Sweatshirt',
+            'PC90H' => 'Port & Company Essential Fleece Pullover Hooded Sweatshirt',
+            'PC90' => 'Port & Company Essential Fleece Crewneck Sweatshirt',
+            'CP80' => 'Port Authority Six-Panel Twill Cap',
+            'CP90' => 'Port Authority Knit Cap',
+            'K540' => 'Port Authority Easy Care Shirt',
+            'S608' => 'Port Authority Easy Care Long Sleeve Shirt',
+            'L608' => 'Port Authority Ladies Easy Care Long Sleeve Shirt',
+            'S508' => 'Port Authority Short Sleeve Easy Care Shirt',
+            'LS508' => 'Port Authority Ladies Short Sleeve Easy Care Shirt',
+            'C112' => 'CornerStone Washed Duck Active Jacket',
+            'CS410' => 'CornerStone Select Lightweight Snag-Proof Polo',
+            'CS412' => 'CornerStone Select Snag-Proof Polo',
+            'PC450' => 'Port & Company Fan Favorite Tee',
+            'LPC450' => 'Port & Company Ladies Fan Favorite Tee',
+            'PC450LS' => 'Port & Company Fan Favorite Long Sleeve Tee',
+            'NE200' => 'New Era Structured Stretch Fit Cap',
+            'NE1020' => 'New Era Flat Bill Snapback Cap',
+            'NE400' => 'New Era Core Fleece Hoodie',
+            'DT130' => 'District Featherweight Fleece Hoodie',
+            'PC78ZH' => 'Port & Company Core Fleece Full-Zip Hooded Sweatshirt',
+            'K100' => 'Port Authority Core Classic Pique Polo',
+            'LK100' => 'Port Authority Ladies Core Classic Pique Polo',
+            'K110' => 'Port Authority Core Classic Pique Polo with Pocket',
+            'K525' => 'Port Authority Jersey Knit Polo',
+            'L525' => 'Port Authority Ladies Jersey Knit Polo',
+            'LPC54V' => 'Port & Company Ladies Core Cotton V-Neck Tee',
+            'PC450V' => 'Port & Company Fan Favorite V-Neck Tee',
+            'LPC450V' => 'Port & Company Ladies Fan Favorite V-Neck Tee',
+            'ST240' => 'Sport-Tek Sport-Wick Fleece Hooded Pullover',
+            'YST350' => 'Sport-Tek Youth Competitor Tee',
+            'PC54Y' => 'Port & Company Youth Core Cotton Tee',
+            '112TruckerSnapback' => 'Richardson 112 Trucker Snapback',
+            '112PMTruckerSnapback' => 'Richardson 112PM - Trucker Snapback',
+            '112PFPTruckerSnapback' => 'Richardson 112-PFP Trucker Snapback',
+            '112PlusTruckerSnapback' => 'Richardson 112Plus - Trucker Snapback',
+            '6606TruckerSnapback' => 'Yupoong Trucker Snapback',
+            '6006FlatBillTruckerSnapback' => 'Yupoong Flat Bill Trucker Snapback',
+            '6245CMDadCap' => 'Yupoong Dad Cap',
+            '6089MFlatBillSnapback' => 'Yupoong Flat Bill Snapback',
+            'TraditionalSnapback' => 'Yupoong Traditional Snapback',
+            '110MTruckerSnapback' => 'FlexFit 110 Trucker Snapback',
+            '6277CurvedBillFitted' => 'FlexFit Original 6277 Fitted',
+            'TruckerFitted' => 'FlexFit Trucker Fitted',
+            'FlatBillFitted' => 'FlexFit Flat Bill Fitted',
+            '104BRRopeTrucker' => 'Pacific Rope Trucker Snapback',
+            'USA100TruckerSnapback' => 'USA Trucker Snapback',
+        );
+
+        foreach ( $catalog as $sku => $correct_name ) {
+            $product_id = wc_get_product_id_by_sku( $sku );
+            if ( ! $product_id ) {
+                continue;
+            }
+
+            $product = wc_get_product( $product_id );
+            if ( ! $product instanceof WC_Product ) {
+                continue;
+            }
+
+            $current_name = trim( (string) $product->get_name( 'edit' ) );
+            if ( '' === $current_name || 'product' === strtolower( $current_name ) || $current_name !== $correct_name ) {
+                $product->set_name( $correct_name );
+            }
+
+            $product->update_meta_data( self::META_DISPLAY_NAME, $correct_name );
+            $product->save();
+        }
+
+        update_option( 'asbo_catalog_title_repair_version', $repair_version, false );
+        wc_delete_product_transients();
+    }
+
+    private static function display_name( WC_Product $product ): string {
+        $display_name = trim( (string) $product->get_meta( self::META_DISPLAY_NAME ) );
+
+        if ( '' === $display_name || 'product' === strtolower( $display_name ) ) {
+            $display_name = trim( (string) $product->get_name() );
+        }
+
+        if ( '' === $display_name || 'product' === strtolower( $display_name ) ) {
+            $sku = trim( (string) $product->get_sku() );
+            $display_name = $sku ? $sku : __( 'Unnamed product', 'all-star-bulk-order' );
+        }
+
+        return $display_name;
+    }
+
+    /**
+     * Pricing format:
+     * Embroidery|6:30,12:27,24:24
+     * Patch|6:33,12:30,24:27
+     *
+     * WooCommerce Regular Price is authoritative at 1+. Any legacy matrix 1: entry
+     * is retained in product metadata for compatibility but ignored by ASBO pricing.
+     *
+     * @return array<string,array<int,float>>
+     */
+    private static function parse_pricing_matrix( string $raw ): array {
+        $matrix = array();
+        $lines  = preg_split( '/\r\n|\r|\n/', trim( $raw ) );
+
+        if ( ! is_array( $lines ) ) {
+            return $matrix;
+        }
+
+        foreach ( $lines as $line ) {
+            $line = trim( $line );
+            if ( '' === $line || false === strpos( $line, '|' ) ) {
+                continue;
+            }
+
+            list( $decoration, $tiers_raw ) = array_map( 'trim', explode( '|', $line, 2 ) );
+            $decoration = sanitize_text_field( $decoration );
+            if ( '' === $decoration ) {
+                continue;
+            }
+
+            $tiers = array();
+            foreach ( explode( ',', $tiers_raw ) as $pair ) {
+                if ( false === strpos( $pair, ':' ) ) {
+                    continue;
+                }
+
+                list( $qty, $price ) = array_map( 'trim', explode( ':', $pair, 2 ) );
+                $qty   = absint( $qty );
+                $price = (float) wc_format_decimal( $price );
+
+                if ( $qty > 0 && $price >= 0 ) {
+                    $tiers[ $qty ] = $price;
+                }
+            }
+
+            if ( $tiers ) {
+                ksort( $tiers, SORT_NUMERIC );
+                $matrix[ $decoration ] = $tiers;
+            }
+        }
+
+        return $matrix;
+    }
+
+    private static function tier_price( array $tiers, int $quantity ): ?float {
+        if ( $quantity < 1 || empty( $tiers ) ) {
+            return null;
+        }
+
+        ksort( $tiers, SORT_NUMERIC );
+        $selected = null;
+
+        foreach ( $tiers as $minimum => $price ) {
+            // WooCommerce Regular Price is the authoritative 1+ storefront price.
+            // Legacy 1: entries in the ASBO matrix are intentionally ignored.
+            if ( (int) $minimum <= 1 ) {
+                continue;
+            }
+
+            if ( $quantity >= (int) $minimum ) {
+                $selected = (float) $price;
+            }
+        }
+
+        return $selected;
+    }
+
+    public static function register_block(): void {
+        $block_path = plugin_dir_path( __FILE__ ) . 'block';
+
+        if ( file_exists( $block_path . '/block.json' ) ) {
+            register_block_type(
+                $block_path,
+                array(
+                    'render_callback' => array( __CLASS__, 'render_block' ),
+                )
+            );
+        }
+    }
+
+    public static function render_block( array $attributes = array(), string $content = '', $block = null ): string {
+        $defaults = self::block_attribute_defaults();
+        $attributes = wp_parse_args( $attributes, $defaults );
+
+        return self::shortcode(
+            array(
+                'category'                  => $attributes['category'],
+                'limit'                     => $attributes['limit'],
+                'intro_title'               => $attributes['introTitle'],
+                'intro_text'                => $attributes['introText'],
+                'production_note'           => $attributes['productionNote'],
+                'products_title'            => $attributes['productsTitle'],
+                'products_text'             => $attributes['productsText'],
+                'artwork_title'             => $attributes['artworkTitle'],
+                'artwork_text'              => $attributes['artworkText'],
+                'checkout_title'            => $attributes['checkoutTitle'],
+                'checkout_text'             => $attributes['checkoutText'],
+                'step_intro'                => $attributes['stepIntroLabel'],
+                'step_items'                => $attributes['stepItemsLabel'],
+                'step_artwork'              => $attributes['stepArtworkLabel'],
+                'step_checkout'             => $attributes['stepCheckoutLabel'],
+                'select_products_text'      => $attributes['selectProductsText'],
+                'next_artwork_text'         => $attributes['nextArtworkText'],
+                'continue_checkout_text'    => $attributes['continueCheckoutText'],
+                'back_text'                 => $attributes['backText'],
+                'estimated_total_label'     => $attributes['estimatedTotalLabel'],
+                'pieces_selected_label'     => $attributes['piecesSelectedLabel'],
+                'total_saved_label'         => $attributes['totalSavedLabel'],
+                'product_total_label'        => $attributes['productTotalLabel'],
+                'digitizing_incentive_text' => $attributes['digitizingIncentiveText'],
+                'shipping_incentive_text'   => $attributes['shippingIncentiveText'],
+                'free_art_qty'              => $attributes['freeArtQty'],
+                'free_ship_qty'             => $attributes['freeShipQty'],
+                'digitizing_savings_amount' => $attributes['digitizingSavingsAmount'],
+                'shipping_savings_amount'   => $attributes['shippingSavingsAmount'],
+                'primary_color'             => $attributes['primaryColor'],
+                'primary_hover_color'       => $attributes['primaryHoverColor'],
+                'primary_text_color'        => $attributes['primaryTextColor'],
+                'navy_color'                => $attributes['navyColor'],
+                'text_color'                => $attributes['textColor'],
+                'muted_color'               => $attributes['mutedColor'],
+                'border_color'              => $attributes['borderColor'],
+                'surface_color'             => $attributes['surfaceColor'],
+                'page_background'           => $attributes['pageBackground'],
+                'sticky_background'         => $attributes['stickyBackground'],
+                'sticky_text_color'         => $attributes['stickyTextColor'],
+                'progress_inactive_color'   => $attributes['progressInactiveColor'],
+                'button_radius'             => $attributes['buttonRadius'],
+                'card_radius'               => $attributes['cardRadius'],
+            )
+        );
+    }
+
+    private static function block_attribute_defaults(): array {
+        return array(
+            'category'                  => '',
+            'limit'                     => 100,
+            'introTitle'                => 'Build your custom embroidery order.',
+            'introText'                 => 'Choose garments and headwear, select colors and quantities, and watch volume pricing update instantly. Then choose how you’ll provide artwork and add production notes before checkout.',
+            'productionNote'            => 'We’ll confirm thread colors, stitch count, proof approval, and turnaround before production begins.',
+            'productsTitle'             => 'Select garments and headwear',
+            'productsText'              => 'Open a style, choose embroidery or patch, then split the quantity across available colors. Pricing tiers use the combined quantity for that style and decoration method.',
+            'artworkTitle'              => 'Artwork plan and production details',
+            'artworkText'               => 'Tell us how you’ll provide the logo and share the production details we should review. The actual artwork file is uploaded after checkout, once a secure WooCommerce order number exists.',
+            'checkoutTitle'             => 'Review and continue to checkout',
+            'checkoutText'              => 'The customer is sent to WooCommerce checkout, where shipping, taxes, payment, and order details are finalized.',
+            'stepIntroLabel'            => 'Intro',
+            'stepItemsLabel'            => 'Items',
+            'stepArtworkLabel'          => 'Artwork',
+            'stepCheckoutLabel'         => 'Checkout',
+            'selectProductsText'        => 'Select Products',
+            'nextArtworkText'           => 'Next: Artwork Plan',
+            'continueCheckoutText'      => 'Continue to Checkout',
+            'backText'                  => 'Back',
+            'estimatedTotalLabel'       => 'Estimated Total',
+            'piecesSelectedLabel'       => 'Pieces Selected',
+            'totalSavedLabel'           => 'Total Saved',
+            'productTotalLabel'          => 'Selected total',
+            'digitizingIncentiveText'   => 'pieces · Digitizing included',
+            'shippingIncentiveText'     => 'pieces · Standard shipping included',
+            'freeArtQty'                => 12,
+            'freeShipQty'               => 24,
+            'digitizingSavingsAmount'   => 15,
+            'shippingSavingsAmount'     => 9.99,
+            'primaryColor'              => '#f3bd2f',
+            'primaryHoverColor'         => '#f7c94f',
+            'primaryTextColor'          => '#11192d',
+            'navyColor'                 => '#11192d',
+            'textColor'                 => '#182033',
+            'mutedColor'                => '#687184',
+            'borderColor'               => '#e2e6ed',
+            'surfaceColor'              => '#f7f8fb',
+            'pageBackground'            => '#ffffff',
+            'stickyBackground'          => '#ffffff',
+            'stickyTextColor'           => '#182033',
+            'progressInactiveColor'     => '#8a92a2',
+            'buttonRadius'              => 9,
+            'cardRadius'                => 14,
+        );
+    }
+
+    /**
+     * Return recent eligible orders belonging to the currently logged-in customer.
+     * Uses WooCommerce order APIs so it remains compatible with HPOS.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private static function recent_customer_orders(): array {
+        if ( ! is_user_logged_in() || ! function_exists( 'wc_get_orders' ) ) {
+            return array();
+        }
+
+        $user_id = get_current_user_id();
+        if ( $user_id < 1 ) {
+            return array();
+        }
+
+        $orders = wc_get_orders(
+            array(
+                'customer_id' => $user_id,
+                'limit'       => 25,
+                'orderby'     => 'date',
+                'order'       => 'DESC',
+                'status'      => array( 'wc-processing', 'wc-completed', 'wc-on-hold' ),
+                'return'      => 'objects',
+            )
+        );
+
+        $choices = array();
+        foreach ( $orders as $order ) {
+            if ( ! $order instanceof WC_Order || (int) $order->get_customer_id() !== $user_id ) {
+                continue;
+            }
+
+            $item_names = array();
+            $all_items  = $order->get_items();
+            foreach ( $all_items as $item ) {
+                if ( ! $item instanceof WC_Order_Item_Product ) {
+                    continue;
+                }
+                $item_names[] = $item->get_name();
+                if ( count( $item_names ) >= 2 ) {
+                    break;
+                }
+            }
+
+            $product_summary = $item_names ? implode( ', ', $item_names ) : __( 'Custom apparel order', 'all-star-bulk-order' );
+            if ( count( $all_items ) > 2 ) {
+                $product_summary .= sprintf( __( ' +%d more', 'all-star-bulk-order' ), count( $all_items ) - 2 );
+            }
+
+            $date = $order->get_date_created();
+            $choices[] = array(
+                'id'      => $order->get_id(),
+                'number'  => $order->get_order_number(),
+                'date'    => $date ? wc_format_datetime( $date, get_option( 'date_format' ) ) : '',
+                'summary' => wp_strip_all_tags( $product_summary ),
+            );
+        }
+
+        return $choices;
+    }
+
+    /**
+     * Normalize a previous-order reference. A customer-order selector posts values
+     * like "order:123"; manual references remain free text for guest/legacy orders.
+     *
+     * @return array{reference:string,order_id:int}
+     */
+    private static function normalize_previous_order_reference( string $raw ): array {
+        $raw = trim( $raw );
+        if ( '' === $raw ) {
+            return array( 'reference' => '', 'order_id' => 0 );
+        }
+
+        if ( 0 === strpos( $raw, 'order:' ) ) {
+            $order_id = absint( substr( $raw, 6 ) );
+            $order    = $order_id ? wc_get_order( $order_id ) : false;
+            $user_id  = get_current_user_id();
+
+            if ( $order instanceof WC_Order && $user_id > 0 && (int) $order->get_customer_id() === $user_id ) {
+                return array(
+                    'reference' => sprintf( 'Order #%s', $order->get_order_number() ),
+                    'order_id'  => $order->get_id(),
+                );
+            }
+
+            return array( 'reference' => '', 'order_id' => 0 );
+        }
+
+        return array(
+            'reference' => sanitize_text_field( $raw ),
+            'order_id'  => 0,
+        );
+    }
+
+    public static function shortcode( array $atts = array() ): string {
+        $atts = shortcode_atts(
+            array(
+                'category'        => '',
+                'limit'           => '100',
+                'intro_title'     => __( 'Build your custom embroidery order.', 'all-star-bulk-order' ),
+                'intro_text'      => __( 'Choose garments and headwear, select colors and quantities, and watch volume pricing update instantly. Then choose how you’ll provide artwork and add production notes before checkout.', 'all-star-bulk-order' ),
+                'production_note' => __( 'We’ll confirm thread colors, stitch count, proof approval, and turnaround before production begins.', 'all-star-bulk-order' ),
+                'products_title'  => __( 'Select garments and headwear', 'all-star-bulk-order' ),
+                'products_text'   => __( 'Open a style, choose embroidery or patch, then split the quantity across available colors. Pricing tiers use the combined quantity for that style and decoration method.', 'all-star-bulk-order' ),
+                'artwork_title'             => __( 'Artwork plan and production details', 'all-star-bulk-order' ),
+                'artwork_text'              => __( 'Tell us how you’ll provide the logo and share the production details we should review. The actual artwork file is uploaded after checkout, once a secure WooCommerce order number exists.', 'all-star-bulk-order' ),
+                'checkout_title'            => __( 'Review and continue to checkout', 'all-star-bulk-order' ),
+                'checkout_text'             => __( 'The customer is sent to WooCommerce checkout, where shipping, taxes, payment, and order details are finalized.', 'all-star-bulk-order' ),
+                'step_intro'                => __( 'Intro', 'all-star-bulk-order' ),
+                'step_items'                => __( 'Items', 'all-star-bulk-order' ),
+                'step_artwork'              => __( 'Artwork', 'all-star-bulk-order' ),
+                'step_checkout'             => __( 'Checkout', 'all-star-bulk-order' ),
+                'select_products_text'      => __( 'Select Products', 'all-star-bulk-order' ),
+                'next_artwork_text'         => __( 'Next: Artwork Plan', 'all-star-bulk-order' ),
+                'continue_checkout_text'    => __( 'Continue to Checkout', 'all-star-bulk-order' ),
+                'back_text'                 => __( 'Back', 'all-star-bulk-order' ),
+                'estimated_total_label'     => __( 'Estimated Total', 'all-star-bulk-order' ),
+                'pieces_selected_label'     => __( 'Pieces Selected', 'all-star-bulk-order' ),
+                'total_saved_label'         => __( 'Total Saved', 'all-star-bulk-order' ),
+                'product_total_label'        => __( 'Selected total', 'all-star-bulk-order' ),
+                'digitizing_incentive_text' => __( 'pieces · Digitizing included', 'all-star-bulk-order' ),
+                'shipping_incentive_text'   => __( 'pieces · Standard shipping included', 'all-star-bulk-order' ),
+                'free_art_qty'              => 12,
+                'free_ship_qty'             => 24,
+                'digitizing_savings_amount' => 15,
+                'shipping_savings_amount'   => 9.99,
+                'primary_color'             => '#f3bd2f',
+                'primary_hover_color'       => '#f7c94f',
+                'primary_text_color'        => '#11192d',
+                'navy_color'                => '#11192d',
+                'text_color'                => '#182033',
+                'muted_color'               => '#687184',
+                'border_color'              => '#e2e6ed',
+                'surface_color'             => '#f7f8fb',
+                'page_background'           => '#ffffff',
+                'sticky_background'         => '#ffffff',
+                'sticky_text_color'         => '#182033',
+                'progress_inactive_color'   => '#8a92a2',
+                'button_radius'              => 9,
+                'card_radius'                => 14,
+            ),
+            $atts,
+            'asbo_bulk_order'
+        );
+
+        $config = array(
+            'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
+            'nonce'         => wp_create_nonce( 'asbo_bulk_order' ),
+            'checkoutUrl'   => wc_get_checkout_url(),
+            'currency'      => get_woocommerce_currency(),
+            'freeArtQty'    => max( 1, absint( $atts['free_art_qty'] ) ),
+            'freeShipQty'   => max( 1, absint( $atts['free_ship_qty'] ) ),
+            'digitizingSavingsAmount' => max( 0, (float) wc_format_decimal( $atts['digitizing_savings_amount'] ) ),
+            'shippingSavingsAmount'   => max( 0, (float) wc_format_decimal( $atts['shipping_savings_amount'] ) ),
+            'buttonTexts'   => array(
+                'selectProducts'   => sanitize_text_field( $atts['select_products_text'] ),
+                'nextArtwork'      => sanitize_text_field( $atts['next_artwork_text'] ),
+                'continueCheckout' => sanitize_text_field( $atts['continue_checkout_text'] ),
+            ),
+            'storageKey'    => 'asbo_bulk_order_v2',
+            'messages'      => array(
+                'chooseItem' => __( 'Add at least one garment or hat before continuing.', 'all-star-bulk-order' ),
+                'working'    => __( 'Building your production order…', 'all-star-bulk-order' ),
+                'error'      => __( 'We could not prepare the embroidery order. Review the quantities and try again.', 'all-star-bulk-order' ),
+                'choosePreviousOrder' => __( 'Choose a previous order or enter a reference before continuing.', 'all-star-bulk-order' ),
+            ),
+        );
+
+        $query_vars = array(
+            'status'  => 'publish',
+            'limit'   => max( 1, min( 200, absint( $atts['limit'] ) ) ),
+            'orderby' => 'menu_order',
+            'order'   => 'ASC',
+            'return'  => 'objects',
+            'asbo_enabled' => true,
+        );
+
+        if ( '' !== trim( $atts['category'] ) ) {
+            $query_vars['category'] = array( sanitize_title( $atts['category'] ) );
+        }
+
+        $query_filter = static function ( array $wp_query_args, array $product_query_vars ): array {
+            if ( empty( $product_query_vars['asbo_enabled'] ) ) {
+                return $wp_query_args;
+            }
+
+            if ( ! isset( $wp_query_args['meta_query'] ) || ! is_array( $wp_query_args['meta_query'] ) ) {
+                $wp_query_args['meta_query'] = array();
+            }
+
+            $wp_query_args['meta_query'][] = array(
+                'key'     => self::META_ENABLED,
+                'value'   => array( 'yes', '1', 'on', 'true' ),
+                'compare' => 'IN',
+            );
+
+            return $wp_query_args;
+        };
+
+        add_filter( 'woocommerce_product_data_store_cpt_get_products_query', $query_filter, 10, 2 );
+        $products = wc_get_products( $query_vars );
+        remove_filter( 'woocommerce_product_data_store_cpt_get_products_query', $query_filter, 10 );
+
+        // If this ASBO block is already scoped to a WooCommerce category (for
+        // example Headwear), expose only that category's represented direct
+        // children as lightweight storefront filters. This keeps the customer
+        // inside the intended product family instead of turning ASBO into a
+        // second full-catalog WooCommerce browser.
+        $filter_parent_term = null;
+        $filter_categories  = array();
+        if ( '' !== trim( $atts['category'] ) ) {
+            $candidate_parent = get_term_by( 'slug', sanitize_title( $atts['category'] ), 'product_cat' );
+            if ( $candidate_parent instanceof WP_Term ) {
+                $filter_parent_term = $candidate_parent;
+                $children = get_terms( array(
+                    'taxonomy'   => 'product_cat',
+                    'parent'     => (int) $candidate_parent->term_id,
+                    'hide_empty' => false,
+                    'orderby'    => 'name',
+                    'order'      => 'ASC',
+                ) );
+
+                if ( ! is_wp_error( $children ) ) {
+                    foreach ( $children as $child ) {
+                        $represented = false;
+                        foreach ( $products as $product ) {
+                            $product_term_ids = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'ids' ) );
+                            if ( is_wp_error( $product_term_ids ) ) {
+                                continue;
+                            }
+                            foreach ( $product_term_ids as $product_term_id ) {
+                                if ( (int) $product_term_id === (int) $child->term_id || term_is_ancestor_of( (int) $child->term_id, (int) $product_term_id, 'product_cat' ) ) {
+                                    $represented = true;
+                                    break 2;
+                                }
+                            }
+                        }
+                        if ( $represented ) {
+                            $filter_categories[] = $child;
+                        }
+                    }
+                }
+            }
+        }
+
+        $recent_customer_orders = self::recent_customer_orders();
+        $my_account_url         = wc_get_page_permalink( 'myaccount' );
+
+        $style_vars = sprintf(
+            '--asbo-navy:%1$s;--asbo-gold:%2$s;--asbo-gold-hover:%3$s;--asbo-gold-text:%4$s;--asbo-ink:%5$s;--asbo-muted:%6$s;--asbo-border:%7$s;--asbo-surface:%8$s;--asbo-page-bg:%9$s;--asbo-sticky-bg:%10$s;--asbo-sticky-text:%11$s;--asbo-progress-inactive:%12$s;--asbo-button-radius:%13$dpx;--asbo-card-radius:%14$dpx;',
+            sanitize_hex_color( $atts['navy_color'] ) ?: '#11192d',
+            sanitize_hex_color( $atts['primary_color'] ) ?: '#f3bd2f',
+            sanitize_hex_color( $atts['primary_hover_color'] ) ?: '#f7c94f',
+            sanitize_hex_color( $atts['primary_text_color'] ) ?: '#11192d',
+            sanitize_hex_color( $atts['text_color'] ) ?: '#182033',
+            sanitize_hex_color( $atts['muted_color'] ) ?: '#687184',
+            sanitize_hex_color( $atts['border_color'] ) ?: '#e2e6ed',
+            sanitize_hex_color( $atts['surface_color'] ) ?: '#f7f8fb',
+            sanitize_hex_color( $atts['page_background'] ) ?: '#ffffff',
+            sanitize_hex_color( $atts['sticky_background'] ) ?: '#ffffff',
+            sanitize_hex_color( $atts['sticky_text_color'] ) ?: '#182033',
+            sanitize_hex_color( $atts['progress_inactive_color'] ) ?: '#8a92a2',
+            max( 0, min( 40, absint( $atts['button_radius'] ) ) ),
+            max( 0, min( 40, absint( $atts['card_radius'] ) ) )
+        );
+
+        $step_labels = array(
+            1 => sanitize_text_field( $atts['step_intro'] ),
+            2 => sanitize_text_field( $atts['step_items'] ),
+            3 => sanitize_text_field( $atts['step_artwork'] ),
+            4 => sanitize_text_field( $atts['step_checkout'] ),
+        );
+
+        ob_start();
+        ?>
+        <style id="asbo-inline-styles"><?php echo self::inline_css(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></style>
+        <section class="asbo" data-asbo-root style="<?php echo esc_attr( $style_vars ); ?>">
+            <div class="asbo__shell">
+                <header class="asbo__topbar">
+                    <nav class="asbo__progress" aria-label="Order progress">
+                        <?php foreach ( $step_labels as $step => $label ) : ?>
+                            <div class="asbo__progress-step<?php echo 1 === $step ? ' is-active' : ''; ?>" data-progress-step="<?php echo esc_attr( $step ); ?>">
+                                <span><?php echo esc_html( $step ); ?></span>
+                                <strong><?php echo esc_html( $label ); ?></strong>
+                            </div>
+                        <?php endforeach; ?>
+                    </nav>
+                    <button type="button" class="asbo__button asbo__button--primary" data-next-step>
+                        <?php echo esc_html( $atts['select_products_text'] ); ?>
+                    </button>
+                </header>
+
+                <div class="asbo__notice" role="status" aria-live="polite" data-notice hidden></div>
+
+                <div class="asbo__step is-active" data-step-panel="1">
+                    <div class="asbo__intro">
+                        <div class="asbo__intro-copy">
+                            <h1><?php echo esc_html( $atts['intro_title'] ); ?></h1>
+                            <p><?php echo esc_html( $atts['intro_text'] ); ?></p>
+                            <p class="asbo__production-note"><?php echo esc_html( $atts['production_note'] ); ?></p>
+                        </div>
+                        <div class="asbo__benefits" aria-label="What you will prepare">
+                            <p class="asbo__benefits-label"><?php esc_html_e( 'What you’ll choose', 'all-star-bulk-order' ); ?></p>
+                            <div>
+                                <span class="asbo__benefit-mark" aria-hidden="true"></span>
+                                <span><strong><?php esc_html_e( 'Products and colors', 'all-star-bulk-order' ); ?></strong><small><?php esc_html_e( 'Choose hats, polos, tees, jackets, and quantities for each color.', 'all-star-bulk-order' ); ?></small></span>
+                            </div>
+                            <div>
+                                <span class="asbo__benefit-mark" aria-hidden="true"></span>
+                                <span><strong><?php esc_html_e( 'Decoration method', 'all-star-bulk-order' ); ?></strong><small><?php esc_html_e( 'Choose embroidery or patch and see the correct quantity tier automatically.', 'all-star-bulk-order' ); ?></small></span>
+                            </div>
+                            <div>
+                                <span class="asbo__benefit-mark" aria-hidden="true"></span>
+                                <span><strong><?php esc_html_e( 'Artwork and deadline', 'all-star-bulk-order' ); ?></strong><small><?php esc_html_e( 'Choose post-checkout upload, previous artwork, or design help, then share placement, thread colors, and your required in-hands date.', 'all-star-bulk-order' ); ?></small></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="asbo__step" data-step-panel="2" hidden>
+                    <div class="asbo__section-heading">
+                        <div>
+                            <h2><?php echo esc_html( $atts['products_title'] ); ?></h2>
+                        </div>
+                        <p><?php echo esc_html( $atts['products_text'] ); ?></p>
+                    </div>
+
+                    <?php if ( $filter_parent_term instanceof WP_Term && ! empty( $filter_categories ) ) : ?>
+                        <div class="asbo__subcategory-filter" data-subcategory-filter>
+                            <div class="asbo__subcategory-filter-copy">
+                                <strong><?php esc_html_e( 'Filter styles', 'all-star-bulk-order' ); ?></strong>
+                                <small><?php echo esc_html( sprintf( __( 'Showing only %s subcategories.', 'all-star-bulk-order' ), $filter_parent_term->name ) ); ?></small>
+                            </div>
+                            <div class="asbo__subcategory-filter-options" role="group" aria-label="<?php echo esc_attr( sprintf( __( 'Filter %s products', 'all-star-bulk-order' ), $filter_parent_term->name ) ); ?>">
+                                <button type="button" class="is-active" data-subcategory-filter-value="all" aria-pressed="true">
+                                    <?php echo esc_html( sprintf( __( 'All %s', 'all-star-bulk-order' ), $filter_parent_term->name ) ); ?>
+                                </button>
+                                <?php foreach ( $filter_categories as $filter_category ) : ?>
+                                    <button type="button" data-subcategory-filter-value="<?php echo esc_attr( $filter_category->slug ); ?>" aria-pressed="false">
+                                        <?php echo esc_html( $filter_category->name ); ?>
+                                    </button>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <div class="asbo__products">
+                        <?php if ( empty( $products ) ) : ?>
+                            <div class="asbo__empty">
+                                <h3><?php esc_html_e( 'No bulk-order products are enabled yet.', 'all-star-bulk-order' ); ?></h3>
+                                <p><?php esc_html_e( 'Edit a WooCommerce product and enable “Show in bulk order page” in Product data → General.', 'all-star-bulk-order' ); ?></p>
+                            </div>
+                        <?php else : ?>
+                            <?php foreach ( $products as $product ) : ?>
+                                <?php self::render_product( $product, $atts, $filter_categories ); ?>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="asbo__step" data-step-panel="3" hidden>
+                    <div class="asbo__section-heading">
+                        <div>
+                            <h2><?php echo esc_html( $atts['artwork_title'] ); ?></h2>
+                        </div>
+                        <p><?php echo esc_html( $atts['artwork_text'] ); ?></p>
+                    </div>
+
+                    <div class="asbo__artwork-layout">
+                        <div class="asbo__artwork-card">
+                            <div class="asbo__post-checkout-note">
+                                <span class="asbo__post-checkout-badge"><?php esc_html_e( 'After checkout', 'all-star-bulk-order' ); ?></span>
+                                <div>
+                                    <strong><?php esc_html_e( 'Artwork files stay connected to the final WooCommerce order.', 'all-star-bulk-order' ); ?></strong>
+                                    <p><?php esc_html_e( 'If you are uploading a new file, the secure uploader appears immediately after checkout and remains available from My Account → Orders.', 'all-star-bulk-order' ); ?></p>
+                                </div>
+                            </div>
+
+                            <div class="asbo__stitch-allowance" role="note" aria-label="10K Stitch Allowance">
+                                <span class="asbo__stitch-allowance-label"><?php esc_html_e( '10K Stitch Allowance', 'all-star-bulk-order' ); ?></span>
+                                <p><?php esc_html_e( 'Standard embroidery pricing includes designs up to 10,000 stitches. Larger or more detailed artwork may exceed this allowance. If an additional embroidery charge is required, we will review your artwork and contact you before production.', 'all-star-bulk-order' ); ?></p>
+                            </div>
+
+                            <div class="asbo__artwork-guide">
+                                <span class="asbo__artwork-guide-number">1</span>
+                                <div>
+                                    <strong><?php esc_html_e( 'Choose how we should handle your logo', 'all-star-bulk-order' ); ?></strong>
+                                    <p><?php esc_html_e( 'Pick the path that best matches what you already have. You can add production details underneath.', 'all-star-bulk-order' ); ?></p>
+                                </div>
+                            </div>
+
+                            <fieldset class="asbo__artwork-options">
+                                <legend class="screen-reader-text"><?php esc_html_e( 'How will you provide artwork?', 'all-star-bulk-order' ); ?></legend>
+
+                                <label class="asbo__artwork-option is-selected">
+                                    <input type="radio" name="asbo-artwork-plan" value="upload_after_checkout" data-artwork-plan checked>
+                                    <span class="asbo__artwork-option-icon" aria-hidden="true">↥</span>
+                                    <span class="asbo__artwork-option-copy">
+                                        <strong><?php esc_html_e( 'Upload a new file', 'all-star-bulk-order' ); ?></strong>
+                                        <small><?php esc_html_e( 'Choose this if you already have a PNG, JPG, PDF, AI, EPS, or similar logo file.', 'all-star-bulk-order' ); ?></small>
+                                    </span>
+                                    <span class="asbo__artwork-option-check" aria-hidden="true">✓</span>
+                                </label>
+
+                                <label class="asbo__artwork-option">
+                                    <input type="radio" name="asbo-artwork-plan" value="previous_order" data-artwork-plan>
+                                    <span class="asbo__artwork-option-icon" aria-hidden="true">↺</span>
+                                    <span class="asbo__artwork-option-copy">
+                                        <strong><?php esc_html_e( 'Reuse approved artwork', 'all-star-bulk-order' ); ?></strong>
+                                        <small><?php esc_html_e( 'Choose a previous order below and we will reference the artwork already associated with it.', 'all-star-bulk-order' ); ?></small>
+                                    </span>
+                                    <span class="asbo__artwork-option-check" aria-hidden="true">✓</span>
+                                </label>
+
+                                <label class="asbo__artwork-option">
+                                    <input type="radio" name="asbo-artwork-plan" value="design_help" data-artwork-plan>
+                                    <span class="asbo__artwork-option-icon" aria-hidden="true">✦</span>
+                                    <span class="asbo__artwork-option-copy">
+                                        <strong><?php esc_html_e( 'I need design or digitizing help', 'all-star-bulk-order' ); ?></strong>
+                                        <small><?php esc_html_e( 'Choose this if your logo needs cleanup, digitizing, stitch-count guidance, or help getting production-ready.', 'all-star-bulk-order' ); ?></small>
+                                    </span>
+                                    <span class="asbo__artwork-option-check" aria-hidden="true">✓</span>
+                                </label>
+                            </fieldset>
+
+                            <div class="asbo__previous-order-box" data-previous-order-field hidden>
+                                <?php if ( is_user_logged_in() && ! empty( $recent_customer_orders ) ) : ?>
+                                    <label class="asbo__field">
+                                        <span><?php esc_html_e( 'Choose one of your recent orders', 'all-star-bulk-order' ); ?></span>
+                                        <select data-previous-order-select>
+                                            <option value=""><?php esc_html_e( 'Select a previous order…', 'all-star-bulk-order' ); ?></option>
+                                            <?php foreach ( $recent_customer_orders as $previous_order_choice ) : ?>
+                                                <option value="order:<?php echo esc_attr( $previous_order_choice['id'] ); ?>">
+                                                    <?php
+                                                    echo esc_html(
+                                                        sprintf(
+                                                            '#%1$s · %2$s · %3$s',
+                                                            $previous_order_choice['number'],
+                                                            $previous_order_choice['date'],
+                                                            $previous_order_choice['summary']
+                                                        )
+                                                    );
+                                                    ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </label>
+                                    <details class="asbo__manual-order-reference">
+                                        <summary><?php esc_html_e( 'Can’t find the order? Enter a reference instead', 'all-star-bulk-order' ); ?></summary>
+                                        <label class="asbo__field">
+                                            <span><?php esc_html_e( 'Order number or identifying details', 'all-star-bulk-order' ); ?></span>
+                                            <input type="text" data-previous-order-manual placeholder="Example: Order #1842 or Newark High School navy hat order">
+                                        </label>
+                                    </details>
+                                <?php else : ?>
+                                    <label class="asbo__field">
+                                        <span><?php esc_html_e( 'Previous order number or identifying details', 'all-star-bulk-order' ); ?></span>
+                                        <input type="text" data-previous-order-manual placeholder="Example: Order #1842 or Newark High School navy hat order">
+                                    </label>
+                                    <?php if ( ! is_user_logged_in() && $my_account_url ) : ?>
+                                        <p class="asbo__previous-order-login">
+                                            <?php esc_html_e( 'Have an account?', 'all-star-bulk-order' ); ?>
+                                            <a href="<?php echo esc_url( $my_account_url ); ?>"><?php esc_html_e( 'Sign in to choose from your past orders.', 'all-star-bulk-order' ); ?></a>
+                                        </p>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="asbo__artwork-guide asbo__artwork-guide--notes">
+                                <span class="asbo__artwork-guide-number">2</span>
+                                <div>
+                                    <strong><?php esc_html_e( 'Tell us what production should look like', 'all-star-bulk-order' ); ?></strong>
+                                    <p><?php esc_html_e( 'Placement, thread matching, garment notes, and deadline details help us prepare the proof correctly the first time.', 'all-star-bulk-order' ); ?></p>
+                                </div>
+                            </div>
+
+                            <label class="asbo__field">
+                                <span><?php esc_html_e( 'Production notes and required in-hands date', 'all-star-bulk-order' ); ?></span>
+                                <textarea rows="5" data-artwork-notes placeholder="Example: Left-chest logo, match Pantone 186 C, navy polos, needed in hand by September 1."></textarea>
+                            </label>
+
+                            <p class="asbo__artwork-reminder">
+                                <?php esc_html_e( 'We will confirm thread colors, stitch count, proof approval, and final turnaround before production begins.', 'all-star-bulk-order' ); ?>
+                            </p>
+                        </div>
+
+                        <aside class="asbo__review-card">
+                            <h3><?php esc_html_e( 'Production order review', 'all-star-bulk-order' ); ?></h3>
+                            <div data-order-review></div>
+                            <div class="asbo__review-total">
+                                <span><?php esc_html_e( 'Estimated decorated-product total', 'all-star-bulk-order' ); ?></span>
+                                <strong data-review-total>$0.00</strong>
+                            </div>
+                            <p class="asbo__fine-print"><?php esc_html_e( 'Standard embroidery pricing includes up to 10,000 stitches per design. Additional charges may apply for larger or more complex artwork and will be communicated prior to production. Specialty thread, multiple placements, rush production, shipping, and taxes may also affect the final total.', 'all-star-bulk-order' ); ?></p>
+                        </aside>
+                    </div>
+                </div>
+            </div>
+
+            <footer class="asbo__sticky is-visible" data-sticky-summary aria-hidden="false">
+                <div class="asbo__sticky-inner">
+                    <div class="asbo__sticky-stat">
+                        <span><?php echo esc_html( $atts['estimated_total_label'] ); ?></span>
+                        <strong data-grand-total>$0.00</strong>
+                    </div>
+                    <div class="asbo__sticky-stat">
+                        <span><?php echo esc_html( $atts['pieces_selected_label'] ); ?></span>
+                        <strong data-total-items>0</strong>
+                    </div>
+                    <div class="asbo__sticky-stat asbo__sticky-stat--saved">
+                        <span><?php echo esc_html( $atts['total_saved_label'] ); ?></span>
+                        <strong data-total-saved>$0.00</strong>
+                    </div>
+                    <div class="asbo__incentives">
+                        <span data-art-incentive><?php echo esc_html( max( 1, absint( $atts['free_art_qty'] ) ) ); ?>+ <?php echo esc_html( $atts['digitizing_incentive_text'] ); ?></span>
+                        <span data-ship-incentive><?php echo esc_html( max( 1, absint( $atts['free_ship_qty'] ) ) ); ?>+ <?php echo esc_html( $atts['shipping_incentive_text'] ); ?></span>
+                    </div>
+                    <div class="asbo__sticky-actions">
+                        <span class="asbo__idle-cue" data-idle-cue aria-hidden="true">↓</span>
+                        <button type="button" class="asbo__button asbo__button--ghost" data-back-step hidden><?php echo esc_html( $atts['back_text'] ); ?></button>
+                        <button type="button" class="asbo__button asbo__button--primary" data-sticky-next><?php echo esc_html( $atts['select_products_text'] ); ?></button>
+                    </div>
+                </div>
+            </footer>
+        </section>
+        <script>window.ASBO_CONFIG = <?php echo wp_json_encode( $config ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>;</script>
+        <script id="asbo-inline-script"><?php echo self::inline_js(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></script>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    private static function render_product( WC_Product $product, array $atts = array(), array $filter_categories = array() ): void {
+        $display_name = self::display_name( $product );
+        $matrix = self::parse_pricing_matrix( (string) $product->get_meta( self::META_PRICING ) );
+        if ( empty( $matrix ) ) {
+            return;
+        }
+
+        $has_embroidery = false;
+        foreach ( array_keys( $matrix ) as $decoration_method ) {
+            if ( false !== stripos( (string) $decoration_method, 'embro' ) ) {
+                $has_embroidery = true;
+                break;
+            }
+        }
+
+        $description = (string) $product->get_meta( self::META_DESCRIPTION );
+        if ( '' === trim( $description ) ) {
+            $description = wp_strip_all_tags( $product->get_short_description() );
+        }
+
+        $size_chart = (string) $product->get_meta( self::META_SIZE_CHART );
+        $image_id   = $product->get_image_id();
+        $image_url  = $image_id ? wp_get_attachment_image_url( $image_id, 'large' ) : wc_placeholder_img_src( 'large' );
+        $thumb      = $image_id ? wp_get_attachment_image( $image_id, 'woocommerce_thumbnail', false, array( 'loading' => 'lazy' ) ) : wc_placeholder_img( 'woocommerce_thumbnail' );
+        $variations = self::get_variation_options( $product );
+
+        if ( empty( $variations ) ) {
+            return;
+        }
+
+        $base_prices = array_values( array_filter( array_map(
+            static function ( array $variation ) {
+                return isset( $variation['base_price'] ) && null !== $variation['base_price'] ? (float) $variation['base_price'] : null;
+            },
+            $variations
+        ), static function ( $price ) {
+            return null !== $price;
+        } ) );
+        $base_min = $base_prices ? min( $base_prices ) : null;
+        $base_max = $base_prices ? max( $base_prices ) : null;
+        $base_price_display = null === $base_min
+            ? '—'
+            : ( abs( (float) $base_max - (float) $base_min ) < 0.00001
+                ? wc_price( $base_min )
+                : wc_price( $base_min ) . '<span class="asbo__price-range-separator">–</span>' . wc_price( $base_max ) );
+
+        // Collapsed rows show the lowest customer-facing unit price available in
+        // the approved ASBO matrix (or Woo Regular Price at 1+) so shoppers have
+        // immediate price context before opening the accordion. Supplier cost
+        // fields are intentionally never consulted here.
+        $starting_price_candidates = $base_prices;
+        foreach ( $matrix as $tiers ) {
+            foreach ( $tiers as $threshold => $price ) {
+                if ( (int) $threshold > 1 && is_numeric( $price ) ) {
+                    $starting_price_candidates[] = (float) $price;
+                }
+            }
+        }
+        $starting_price = $starting_price_candidates ? min( $starting_price_candidates ) : null;
+
+        $product_filter_slugs = array();
+        if ( ! empty( $filter_categories ) ) {
+            $product_term_ids = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'ids' ) );
+            if ( ! is_wp_error( $product_term_ids ) ) {
+                foreach ( $filter_categories as $filter_category ) {
+                    foreach ( $product_term_ids as $product_term_id ) {
+                        if ( (int) $product_term_id === (int) $filter_category->term_id || term_is_ancestor_of( (int) $filter_category->term_id, (int) $product_term_id, 'product_cat' ) ) {
+                            $product_filter_slugs[] = sanitize_title( $filter_category->slug );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        $thresholds = array( 1 );
+        foreach ( $matrix as $tiers ) {
+            $thresholds = array_unique( array_merge( $thresholds, array_keys( $tiers ) ) );
+        }
+        sort( $thresholds, SORT_NUMERIC );
+        ?>
+        <article class="asbo__product" data-product data-product-id="<?php echo esc_attr( $product->get_id() ); ?>" data-product-name="<?php echo esc_attr( $display_name ); ?>" data-subcategories="<?php echo esc_attr( implode( ' ', array_unique( $product_filter_slugs ) ) ); ?>">
+            <div class="asbo__product-summary">
+                <button
+                    type="button"
+                    class="asbo__product-trigger"
+                    aria-expanded="false"
+                    aria-label="<?php echo esc_attr( sprintf( __( 'Configure %s', 'all-star-bulk-order' ), $display_name ) ); ?>"
+                ></button>
+                <span class="asbo__product-thumb"><?php echo wp_kses_post( $thumb ); ?></span>
+                <span class="asbo__product-title-wrap">
+                    <span class="asbo__product-title-line">
+                        <strong><?php echo esc_html( $display_name ); ?></strong>
+                        <button
+                            type="button"
+                            class="asbo__details-chip"
+                            data-product-details-open
+                            aria-haspopup="dialog"
+                            aria-controls="asbo-product-details-<?php echo esc_attr( $product->get_id() ); ?>"
+                            aria-label="<?php echo esc_attr( sprintf( __( 'View details and sizing for %s', 'all-star-bulk-order' ), $display_name ) ); ?>"
+                        ><?php esc_html_e( 'Details & sizing', 'all-star-bulk-order' ); ?></button>
+                    </span>
+                    <small class="asbo__product-meta">
+                        <span data-product-quantity-label><?php esc_html_e( 'No pieces selected', 'all-star-bulk-order' ); ?></span>
+                        <?php if ( null !== $starting_price ) : ?>
+                            <span class="asbo__product-meta-separator" aria-hidden="true">•</span>
+                            <span class="asbo__starting-price"><?php echo wp_kses_post( sprintf( __( 'Starting at %s', 'all-star-bulk-order' ), wc_price( $starting_price ) ) ); ?></span>
+                        <?php endif; ?>
+                    </small>
+                </span>
+                <span class="asbo__product-total-wrap">
+                    <small><?php echo esc_html( $atts['product_total_label'] ); ?></small>
+                    <strong class="asbo__product-subtotal" data-product-subtotal>$0.00</strong>
+                </span>
+                <span class="asbo__product-icon" aria-hidden="true">+</span>
+            </div>
+
+            <div class="asbo__product-panel" hidden>
+                <script type="application/json" class="asbo__pricing-data"><?php echo wp_json_encode( $matrix ); ?></script>
+
+                <div class="asbo__pricing-section">
+                    <div class="asbo__section-title-row">
+                        <div>
+                            <h4><?php esc_html_e( 'Per-piece pricing by quantity', 'all-star-bulk-order' ); ?></h4>
+                            <p><?php esc_html_e( 'Your decoration choice and combined color quantity determine the unit price.', 'all-star-bulk-order' ); ?></p>
+                        </div>
+                        <div class="asbo__active-tier" data-active-tier><?php esc_html_e( 'Enter quantities to calculate your pricing tier', 'all-star-bulk-order' ); ?></div>
+                    </div>
+                    <?php if ( $has_embroidery ) : ?>
+                        <p class="asbo__stitch-policy-note">
+                            <strong><?php esc_html_e( '10K stitch allowance:', 'all-star-bulk-order' ); ?></strong>
+                            <?php esc_html_e( 'Includes embroidery up to 10,000 stitches. Additional charges may apply for larger or more complex designs.', 'all-star-bulk-order' ); ?>
+                        </p>
+                    <?php endif; ?>
+                    <div class="asbo__table-scroll">
+                        <table class="asbo__pricing-table">
+                            <thead>
+                                <tr>
+                                    <th scope="col"><?php esc_html_e( 'Decoration method', 'all-star-bulk-order' ); ?></th>
+                                    <?php foreach ( $thresholds as $threshold ) : ?>
+                                        <th scope="col"><?php echo esc_html( $threshold ); ?>+</th>
+                                    <?php endforeach; ?>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ( $matrix as $decoration => $tiers ) : ?>
+                                    <tr data-pricing-row="<?php echo esc_attr( $decoration ); ?>">
+                                        <th scope="row"><?php echo esc_html( $decoration ); ?></th>
+                                        <?php foreach ( $thresholds as $threshold ) : ?>
+                                            <td data-threshold="<?php echo esc_attr( $threshold ); ?>">
+                                                <?php
+                                                if ( 1 === (int) $threshold ) {
+                                                    // 1+ is always the WooCommerce Regular Price.
+                                                    echo wp_kses_post( $base_price_display );
+                                                } elseif ( isset( $tiers[ $threshold ] ) ) {
+                                                    echo wp_kses_post( wc_price( $tiers[ $threshold ] ) );
+                                                } else {
+                                                    echo '—';
+                                                }
+                                                ?>
+                                            </td>
+                                        <?php endforeach; ?>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="asbo__decoration-section">
+                    <h4><?php esc_html_e( '1. Choose the decoration method', 'all-star-bulk-order' ); ?></h4>
+                    <div class="asbo__decoration-options">
+                        <?php $first = true; ?>
+                        <?php foreach ( array_keys( $matrix ) as $decoration ) : ?>
+                            <label>
+                                <input type="radio" name="asbo-decoration-<?php echo esc_attr( $product->get_id() ); ?>" value="<?php echo esc_attr( $decoration ); ?>" data-decoration <?php checked( $first ); ?>>
+                                <span><?php echo esc_html( $decoration ); ?></span>
+                            </label>
+                            <?php $first = false; ?>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
+                <div class="asbo__variants-section">
+                    <div class="asbo__section-title-row">
+                        <div>
+                            <h4><?php esc_html_e( '2. Split quantities by color', 'all-star-bulk-order' ); ?></h4>
+                            <p><?php esc_html_e( 'All colors of this style count together toward the same quantity break.', 'all-star-bulk-order' ); ?></p>
+                        </div>
+                    </div>
+
+                    <div class="asbo__variant-grid">
+                        <?php foreach ( $variations as $variation ) : ?>
+                            <div class="asbo__variant" data-variation-id="<?php echo esc_attr( $variation['variation_id'] ); ?>">
+                                <div class="asbo__variant-image">
+                                    <img src="<?php echo esc_url( $variation['image'] ); ?>" alt="<?php echo esc_attr( $variation['label'] ); ?>" loading="lazy">
+                                </div>
+                                <strong><?php echo esc_html( $variation['label'] ); ?></strong>
+                                <?php if ( ! $variation['purchasable'] ) : ?>
+                                    <small><?php esc_html_e( 'Unavailable', 'all-star-bulk-order' ); ?></small>
+                                <?php else : ?>
+                                    <div class="asbo__quantity" aria-label="<?php echo esc_attr( sprintf( __( 'Quantity for %s', 'all-star-bulk-order' ), $variation['label'] ) ); ?>">
+                                        <button type="button" data-qty-minus aria-label="<?php esc_attr_e( 'Decrease quantity', 'all-star-bulk-order' ); ?>">−</button>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max="9999"
+                                            step="1"
+                                            value="0"
+                                            inputmode="numeric"
+                                            data-qty-input
+                                            data-product-id="<?php echo esc_attr( $product->get_id() ); ?>"
+                                            data-variation-id="<?php echo esc_attr( $variation['variation_id'] ); ?>"
+                                            data-variation-label="<?php echo esc_attr( $variation['label'] ); ?>"
+                                            data-base-price="<?php echo esc_attr( null !== $variation['base_price'] ? wc_format_decimal( $variation['base_price'], wc_get_price_decimals() ) : '' ); ?>"
+                                        >
+                                        <button type="button" data-qty-plus aria-label="<?php esc_attr_e( 'Increase quantity', 'all-star-bulk-order' ); ?>">+</button>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+
+            <div class="asbo__product-modal" id="asbo-product-details-<?php echo esc_attr( $product->get_id() ); ?>" data-product-modal hidden>
+                <button type="button" class="asbo__modal-backdrop" data-product-details-close aria-label="<?php esc_attr_e( 'Close product details', 'all-star-bulk-order' ); ?>"></button>
+                <div class="asbo__modal-dialog" role="dialog" aria-modal="true" aria-labelledby="asbo-product-details-title-<?php echo esc_attr( $product->get_id() ); ?>">
+                    <button type="button" class="asbo__modal-close" data-product-details-close aria-label="<?php esc_attr_e( 'Close product details', 'all-star-bulk-order' ); ?>">×</button>
+                    <div class="asbo__modal-grid">
+                        <div class="asbo__modal-image">
+                            <img src="<?php echo esc_url( $image_url ); ?>" alt="<?php echo esc_attr( $display_name ); ?>" loading="lazy">
+                        </div>
+                        <div class="asbo__modal-copy">
+                            <span class="asbo__modal-kicker"><?php esc_html_e( 'Product details', 'all-star-bulk-order' ); ?></span>
+                            <h3 id="asbo-product-details-title-<?php echo esc_attr( $product->get_id() ); ?>"><?php echo esc_html( $display_name ); ?></h3>
+                            <?php if ( '' !== trim( $description ) ) : ?>
+                                <p><?php echo esc_html( $description ); ?></p>
+                            <?php endif; ?>
+                            <?php if ( '' !== trim( $size_chart ) ) : ?>
+                                <div class="asbo__modal-specs">
+                                    <h4><?php esc_html_e( 'Garment specifications and size information', 'all-star-bulk-order' ); ?></h4>
+                                    <?php echo wp_kses_post( wpautop( $size_chart ) ); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </article>
+        <?php
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    private static function get_variation_options( WC_Product $product ): array {
+        $options = array();
+
+        if ( $product->is_type( 'variable' ) ) {
+            /** @var WC_Product_Variable $product */
+            foreach ( $product->get_children() as $variation_id ) {
+                $variation = wc_get_product( $variation_id );
+                if ( ! $variation instanceof WC_Product_Variation ) {
+                    continue;
+                }
+
+                $parts = array();
+                foreach ( $variation->get_attributes() as $attribute_name => $attribute_value ) {
+                    $taxonomy = str_replace( 'attribute_', '', $attribute_name );
+                    $label    = wc_attribute_label( $taxonomy, $product );
+                    $value    = $attribute_value;
+
+                    if ( taxonomy_exists( $taxonomy ) ) {
+                        $term = get_term_by( 'slug', $attribute_value, $taxonomy );
+                        if ( $term && ! is_wp_error( $term ) ) {
+                            $value = $term->name;
+                        }
+                    }
+
+                    $parts[] = count( $variation->get_attributes() ) > 1 ? $label . ': ' . $value : $value;
+                }
+
+                $variation_image_id = $variation->get_image_id() ?: $product->get_image_id();
+                $options[] = array(
+                    'variation_id' => $variation->get_id(),
+                    'label'        => $parts ? implode( ' / ', $parts ) : $variation->get_name(),
+                    'image'        => $variation_image_id ? wp_get_attachment_image_url( $variation_image_id, 'woocommerce_thumbnail' ) : wc_placeholder_img_src( 'woocommerce_thumbnail' ),
+                    'purchasable'  => '' !== (string) $variation->get_regular_price( 'edit' ) && $variation->is_purchasable() && $variation->is_in_stock(),
+                    'base_price'   => '' !== (string) $variation->get_regular_price( 'edit' ) ? (float) $variation->get_regular_price( 'edit' ) : null,
+                );
+            }
+        } else {
+            $image_id = $product->get_image_id();
+            $options[] = array(
+                'variation_id' => 0,
+                'label'        => __( 'Standard', 'all-star-bulk-order' ),
+                'image'        => $image_id ? wp_get_attachment_image_url( $image_id, 'woocommerce_thumbnail' ) : wc_placeholder_img_src( 'woocommerce_thumbnail' ),
+                'purchasable'  => '' !== (string) $product->get_regular_price( 'edit' ) && $product->is_purchasable() && $product->is_in_stock(),
+                'base_price'   => '' !== (string) $product->get_regular_price( 'edit' ) ? (float) $product->get_regular_price( 'edit' ) : null,
+            );
+        }
+
+        return $options;
+    }
+
+    public static function ajax_add_bulk_to_cart(): void {
+        check_ajax_referer( 'asbo_bulk_order', 'nonce' );
+
+        if ( ! WC()->cart ) {
+            wc_load_cart();
+        }
+
+        $raw_selections = isset( $_POST['selections'] ) ? wp_unslash( $_POST['selections'] ) : '';
+        $selections     = json_decode( $raw_selections, true );
+
+        if ( ! is_array( $selections ) || empty( $selections ) ) {
+            wp_send_json_error( array( 'message' => __( 'No products were selected.', 'all-star-bulk-order' ) ), 400 );
+        }
+
+        $normalized = array();
+        $validation_errors = array();
+
+        foreach ( $selections as $selection ) {
+            $product_id   = isset( $selection['productId'] ) ? absint( $selection['productId'] ) : 0;
+            $variation_id = isset( $selection['variationId'] ) ? absint( $selection['variationId'] ) : 0;
+            $quantity     = isset( $selection['quantity'] ) ? min( 9999, absint( $selection['quantity'] ) ) : 0;
+            $decoration   = isset( $selection['decoration'] ) ? sanitize_text_field( $selection['decoration'] ) : '';
+
+            if ( $product_id < 1 || $quantity < 1 || '' === $decoration ) {
+                continue;
+            }
+
+            $product = wc_get_product( $product_id );
+            if ( ! $product instanceof WC_Product || 'yes' !== $product->get_meta( self::META_ENABLED ) ) {
+                $validation_errors[] = __( 'A selected product is no longer available for bulk ordering. Refresh the page and try again.', 'all-star-bulk-order' );
+                continue;
+            }
+
+            $matrix = self::parse_pricing_matrix( (string) $product->get_meta( self::META_PRICING ) );
+            if ( ! isset( $matrix[ $decoration ] ) ) {
+                $validation_errors[] = sprintf(
+                    __( '%s no longer has pricing for the selected decoration method.', 'all-star-bulk-order' ),
+                    self::display_name( $product )
+                );
+                continue;
+            }
+
+            $sellable_product      = $product;
+            $variation_attributes  = array();
+            $variation_label       = '';
+
+            if ( $variation_id > 0 ) {
+                $variation = wc_get_product( $variation_id );
+                if ( ! $variation instanceof WC_Product_Variation || $variation->get_parent_id() !== $product_id ) {
+                    $validation_errors[] = sprintf(
+                        __( '%s has a variation that changed after this page loaded. Refresh the page and select it again.', 'all-star-bulk-order' ),
+                        self::display_name( $product )
+                    );
+                    continue;
+                }
+
+                if ( 'publish' !== $variation->get_status() ) {
+                    $validation_errors[] = sprintf(
+                        __( '%s — %s is no longer active.', 'all-star-bulk-order' ),
+                        self::display_name( $product ),
+                        wp_strip_all_tags( wc_get_formatted_variation( $variation, true, false, true ) )
+                    );
+                    continue;
+                }
+
+                // Supplier Sync is the source of truth for the Woo variation. Always
+                // rebuild attributes server-side rather than trusting stale browser data.
+                $variation_attributes = $variation->get_variation_attributes();
+                $variation_label      = wp_strip_all_tags( wc_get_formatted_variation( $variation, true, false, true ) );
+                $sellable_product     = $variation;
+            } elseif ( $product->is_type( 'variable' ) ) {
+                $validation_errors[] = sprintf(
+                    __( '%s requires a specific color/size variation.', 'all-star-bulk-order' ),
+                    self::display_name( $product )
+                );
+                continue;
+            }
+
+            if ( ! $sellable_product->is_in_stock() ) {
+                $validation_errors[] = self::cart_validation_message( $product, $variation_label, __( 'is currently out of stock.', 'all-star-bulk-order' ) );
+                continue;
+            }
+
+            if ( ! $sellable_product->backorders_allowed() && ! $sellable_product->has_enough_stock( $quantity ) ) {
+                $available = $sellable_product->get_stock_quantity();
+                $reason = null === $available
+                    ? __( 'does not have enough stock for that quantity.', 'all-star-bulk-order' )
+                    : sprintf( __( 'only has %d available.', 'all-star-bulk-order' ), max( 0, (int) $available ) );
+                $validation_errors[] = self::cart_validation_message( $product, $variation_label, $reason );
+                continue;
+            }
+
+            $base_price_raw = (string) $sellable_product->get_regular_price( 'edit' );
+            $base_unit_price = '' !== $base_price_raw ? (float) $base_price_raw : null;
+
+            $normalized[] = array(
+                'product_id'           => $product_id,
+                'variation_id'         => $variation_id,
+                'quantity'             => $quantity,
+                'decoration'           => $decoration,
+                'variation_attributes' => $variation_attributes,
+                'variation_label'      => $variation_label,
+                'base_unit_price'      => $base_unit_price,
+            );
+        }
+
+        if ( $validation_errors ) {
+            wp_send_json_error( array( 'message' => implode( ' ', array_unique( $validation_errors ) ) ), 409 );
+        }
+
+        if ( empty( $normalized ) ) {
+            wp_send_json_error( array( 'message' => __( 'The selected products could not be validated.', 'all-star-bulk-order' ) ), 400 );
+        }
+
+        $group_totals = array();
+        foreach ( $normalized as $item ) {
+            $group_key = $item['product_id'] . '|' . $item['decoration'];
+            $group_totals[ $group_key ] = ( $group_totals[ $group_key ] ?? 0 ) + $item['quantity'];
+        }
+
+        // Resolve every ASBO price before mutating the cart. This keeps the cart
+        // operation atomic if a matrix was edited while the customer had the page open.
+        foreach ( $normalized as $index => $item ) {
+            $product    = wc_get_product( $item['product_id'] );
+            $matrix     = self::parse_pricing_matrix( (string) $product->get_meta( self::META_PRICING ) );
+            $group_key  = $item['product_id'] . '|' . $item['decoration'];
+            $unit_price = isset( $matrix[ $item['decoration'] ] )
+                ? self::tier_price( $matrix[ $item['decoration'] ], $group_totals[ $group_key ] )
+                : null;
+
+            // Quantities below the first configured bulk break use the product's
+            // WooCommerce Regular Price. Supplier Sync owns that storefront base price;
+            // ASBO never derives it from supplier cost, MAP, MSRP, list price, or price_breaks.
+            if ( null === $unit_price ) {
+                $unit_price = $item['base_unit_price'];
+            }
+
+            if ( null === $unit_price ) {
+                wp_send_json_error(
+                    array(
+                        'message' => self::cart_validation_message(
+                            $product,
+                            $item['variation_label'],
+                            __( 'is missing its WooCommerce Regular Price. Run Supplier Sync → Quick Repair, then retry.', 'all-star-bulk-order' )
+                        ),
+                    ),
+                    409
+                );
+            }
+
+            $normalized[ $index ]['unit_price'] = (float) $unit_price;
+        }
+
+        $order_group = wp_generate_uuid4();
+        $added       = array();
+
+        // Supplier Sync guarantees a valid WooCommerce Regular Price. ASBO no longer
+        // bypasses WooCommerce purchasability checks when that source-of-truth price is missing.
+
+        foreach ( $normalized as $item ) {
+            $product = wc_get_product( $item['product_id'] );
+            if ( ! $product ) {
+                self::rollback_added_cart_items( $added );
+                wp_send_json_error( array( 'message' => __( 'A selected product changed during checkout preparation. Refresh and try again.', 'all-star-bulk-order' ) ), 409 );
+            }
+
+            $cart_item_data = array(
+                'asbo' => array(
+                    'parent_product_id' => $item['product_id'],
+                    'decoration'        => $item['decoration'],
+                    'order_group'       => $order_group,
+                    'unit_price'        => $item['unit_price'],
+                    'base_unit_price'   => $item['base_unit_price'],
+                ),
+                'asbo_unique' => md5( wp_json_encode( $item ) . microtime( true ) . wp_rand() ),
+            );
+
+            $errors_before = wc_get_notices( 'error' );
+
+            $cart_key = WC()->cart->add_to_cart(
+                $item['product_id'],
+                $item['quantity'],
+                $item['variation_id'],
+                $item['variation_attributes'],
+                $cart_item_data
+            );
+
+            if ( ! $cart_key ) {
+                $errors_after = wc_get_notices( 'error' );
+                $new_notices  = array_slice( $errors_after, count( $errors_before ) );
+                $reason       = self::notice_text( $new_notices );
+
+                self::rollback_added_cart_items( $added );
+
+                if ( '' === $reason ) {
+                    $reason = __( 'WooCommerce rejected this variation. Run Supplier Sync → Quick Repair for this product, then retry.', 'all-star-bulk-order' );
+                }
+
+                wp_send_json_error(
+                    array(
+                        'message' => self::cart_validation_message( $product, $item['variation_label'], $reason ),
+                    ),
+                    409
+                );
+            }
+
+            $added[] = $cart_key;
+        }
+
+        $notes = isset( $_POST['artworkNotes'] )
+            ? sanitize_textarea_field( wp_unslash( $_POST['artworkNotes'] ) )
+            : '';
+
+        $artwork_plan = isset( $_POST['artworkPlan'] )
+            ? sanitize_key( wp_unslash( $_POST['artworkPlan'] ) )
+            : 'upload_after_checkout';
+
+        $allowed_plans = array( 'upload_after_checkout', 'previous_order', 'design_help' );
+        if ( ! in_array( $artwork_plan, $allowed_plans, true ) ) {
+            $artwork_plan = 'upload_after_checkout';
+        }
+
+        $previous_order_raw = isset( $_POST['previousOrder'] )
+            ? (string) wp_unslash( $_POST['previousOrder'] )
+            : '';
+        $previous_order_data = self::normalize_previous_order_reference( $previous_order_raw );
+
+        WC()->session->set(
+            self::SESSION_PROJECT_DETAILS,
+            array(
+                'artwork_plan'      => $artwork_plan,
+                'previous_order'    => $previous_order_data['reference'],
+                'previous_order_id' => $previous_order_data['order_id'],
+                'notes'             => $notes,
+            )
+        );
+
+        WC()->cart->calculate_totals();
+
+        wp_send_json_success(
+            array(
+                'checkoutUrl' => wc_get_checkout_url(),
+                'cartCount'   => WC()->cart->get_cart_contents_count(),
+            )
+        );
+    }
+
+    private static function cart_validation_message( WC_Product $product, string $variation_label, string $reason ): string {
+        $name = self::display_name( $product );
+        if ( '' !== trim( $variation_label ) ) {
+            $name .= ' — ' . trim( $variation_label );
+        }
+        return trim( $name . ' ' . wp_strip_all_tags( $reason ) );
+    }
+
+    private static function rollback_added_cart_items( array $cart_keys ): void {
+        if ( ! WC()->cart ) {
+            return;
+        }
+        foreach ( $cart_keys as $cart_key ) {
+            WC()->cart->remove_cart_item( $cart_key );
+        }
+        WC()->cart->calculate_totals();
+    }
+
+    private static function notice_text( array $notices ): string {
+        $messages = array();
+        foreach ( $notices as $notice ) {
+            if ( is_array( $notice ) && isset( $notice['notice'] ) ) {
+                $messages[] = wp_strip_all_tags( (string) $notice['notice'] );
+            } elseif ( is_string( $notice ) ) {
+                $messages[] = wp_strip_all_tags( $notice );
+            }
+        }
+        return trim( implode( ' ', array_filter( $messages ) ) );
+    }
+
+    public static function apply_cart_tier_prices( WC_Cart $cart ): void {
+        if ( is_admin() && ! wp_doing_ajax() ) {
+            return;
+        }
+
+        $groups = array();
+
+        foreach ( $cart->get_cart() as $cart_key => $cart_item ) {
+            if ( empty( $cart_item['asbo']['parent_product_id'] ) || empty( $cart_item['asbo']['decoration'] ) ) {
+                continue;
+            }
+
+            $parent_id  = absint( $cart_item['asbo']['parent_product_id'] );
+            $decoration = sanitize_text_field( $cart_item['asbo']['decoration'] );
+            $group_key  = $parent_id . '|' . $decoration;
+
+            if ( ! isset( $groups[ $group_key ] ) ) {
+                $groups[ $group_key ] = array(
+                    'parent_id'  => $parent_id,
+                    'decoration' => $decoration,
+                    'quantity'   => 0,
+                    'cart_keys'  => array(),
+                );
+            }
+
+            $groups[ $group_key ]['quantity'] += absint( $cart_item['quantity'] );
+            $groups[ $group_key ]['cart_keys'][] = $cart_key;
+        }
+
+        foreach ( $groups as $group ) {
+            $parent = wc_get_product( $group['parent_id'] );
+            if ( ! $parent ) {
+                continue;
+            }
+
+            $matrix = self::parse_pricing_matrix( (string) $parent->get_meta( self::META_PRICING ) );
+            if ( empty( $matrix[ $group['decoration'] ] ) ) {
+                continue;
+            }
+
+            $price = self::tier_price( $matrix[ $group['decoration'] ], $group['quantity'] );
+
+            foreach ( $group['cart_keys'] as $cart_key ) {
+                if ( ! isset( $cart->cart_contents[ $cart_key ]['data'] ) ) {
+                    continue;
+                }
+
+                if ( null !== $price ) {
+                    $cart->cart_contents[ $cart_key ]['data']->set_price( $price );
+                    continue;
+                }
+
+                // Below the first bulk threshold, preserve each variation's authoritative
+                // WooCommerce Regular Price rather than forcing a matrix 1+ value.
+                if ( isset( $cart->cart_contents[ $cart_key ]['asbo']['base_unit_price'] )
+                    && null !== $cart->cart_contents[ $cart_key ]['asbo']['base_unit_price'] ) {
+                    $cart->cart_contents[ $cart_key ]['data']->set_price( (float) $cart->cart_contents[ $cart_key ]['asbo']['base_unit_price'] );
+                }
+            }
+        }
+    }
+
+    public static function display_cart_item_data( array $item_data, array $cart_item ): array {
+        if ( ! empty( $cart_item['asbo']['decoration'] ) ) {
+            $item_data[] = array(
+                'key'   => __( 'Decoration', 'all-star-bulk-order' ),
+                'value' => sanitize_text_field( $cart_item['asbo']['decoration'] ),
+            );
+        }
+
+        return $item_data;
+    }
+
+    public static function copy_line_item_meta( WC_Order_Item_Product $item, string $cart_item_key, array $values, WC_Order $order ): void {
+        if ( ! empty( $values['asbo']['decoration'] ) ) {
+            $item->add_meta_data( __( 'Decoration', 'all-star-bulk-order' ), sanitize_text_field( $values['asbo']['decoration'] ), true );
+        }
+    }
+
+    public static function copy_project_details_to_order( WC_Order $order, array $data ): void {
+        $details = WC()->session ? WC()->session->get( self::SESSION_PROJECT_DETAILS ) : null;
+        if ( ! is_array( $details ) ) {
+            return;
+        }
+
+        $artwork_plan = sanitize_key( $details['artwork_plan'] ?? 'upload_after_checkout' );
+        $plan_labels  = array(
+            'upload_after_checkout' => 'Customer will upload artwork after checkout.',
+            'previous_order'        => 'Customer wants to reuse artwork from a previous order.',
+            'design_help'           => 'Customer requested artwork or digitizing assistance.',
+        );
+
+        if ( ! isset( $plan_labels[ $artwork_plan ] ) ) {
+            $artwork_plan = 'upload_after_checkout';
+        }
+
+        $order->update_meta_data( '_asbo_artwork_plan', $artwork_plan );
+        $order->update_meta_data( '_ase_artwork_status', 'needed' );
+        $order->add_order_note( 'Artwork plan: ' . $plan_labels[ $artwork_plan ] );
+
+        if ( ! empty( $details['previous_order'] ) ) {
+            $previous_order = sanitize_text_field( $details['previous_order'] );
+            $order->update_meta_data( '_asbo_previous_order_reference', $previous_order );
+            if ( ! empty( $details['previous_order_id'] ) ) {
+                $order->update_meta_data( '_asbo_previous_order_id', absint( $details['previous_order_id'] ) );
+            }
+            $order->add_order_note( 'Previous artwork reference: ' . $previous_order );
+        }
+
+        if ( ! empty( $details['notes'] ) ) {
+            $notes = sanitize_textarea_field( $details['notes'] );
+            $order->update_meta_data( '_asbo_artwork_notes', $notes );
+            $order->add_order_note( 'Production and artwork notes: ' . $notes );
+        }
+    }
+
+    public static function clear_project_details_session(): void {
+        if ( WC()->session ) {
+            WC()->session->__unset( self::SESSION_PROJECT_DETAILS );
+        }
+    }
+
+    private static function inline_css(): string {
+        return <<<'CSS'
+.asbo {
+  --asbo-navy: #11192d;
+  --asbo-navy-soft: #1d2b4b;
+  --asbo-gold: #f3bd2f;
+  --asbo-gold-hover: #f7c94f;
+  --asbo-gold-text: #11192d;
+  --asbo-gold-dark: #d79f13;
+  --asbo-ink: #182033;
+  --asbo-muted: #687184;
+  --asbo-border: #e2e6ed;
+  --asbo-border-strong: #cfd5df;
+  --asbo-surface: #f7f8fb;
+  --asbo-surface-warm: #fffaf0;
+  --asbo-white: #ffffff;
+  --asbo-success: #1b7a4a;
+  --asbo-danger: #a83f3a;
+  --asbo-radius: var(--asbo-card-radius, 14px);
+  --asbo-shadow: 0 12px 34px rgba(17, 25, 45, 0.07);
+  box-sizing: border-box;
+  width: 100%;
+  padding: 36px 18px 150px;
+  background: var(--asbo-page-bg, #ffffff);
+  color: var(--asbo-ink);
+  font-family: inherit;
+}
+
+.asbo,
+.asbo * {
+  box-sizing: border-box;
+}
+
+.asbo button,
+.asbo input,
+.asbo textarea {
+  font-family: inherit;
+}
+
+.asbo img {
+  display: block;
+}
+
+.asbo :focus-visible {
+  outline: 3px solid rgba(243, 189, 47, 0.5);
+  outline-offset: 3px;
+}
+
+.asbo__shell {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+}
+
+.asbo__topbar {
+  position: sticky;
+  top: 14px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 34px;
+  padding: 14px 16px;
+  border: 1px solid var(--asbo-border);
+  border-radius: var(--asbo-radius);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 28px rgba(17, 25, 45, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.asbo__progress {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(105px, 1fr));
+  flex: 1;
+  min-width: 0;
+}
+
+.asbo__progress-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--asbo-progress-inactive, #8a92a2);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.asbo__progress-step:not(:last-child)::after {
+  width: max(22px, 38%);
+  margin: 0 12px;
+  border-top: 1px solid #d8dde6;
+  content: "";
+}
+
+.asbo__progress-step span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border: 1px solid #cfd5df;
+  border-radius: 50%;
+  background: #fff;
+  color: #7c8493;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.asbo__progress-step.is-active,
+.asbo__progress-step.is-complete {
+  color: var(--asbo-navy);
+}
+
+.asbo__progress-step.is-active span {
+  border-color: var(--asbo-gold-dark);
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+}
+
+.asbo__progress-step.is-complete span {
+  border-color: var(--asbo-navy);
+  background: var(--asbo-navy);
+  color: #fff;
+}
+
+.asbo__progress-step.is-complete:not(:last-child)::after {
+  border-color: var(--asbo-navy-soft);
+}
+
+.asbo__button {
+  min-height: 46px;
+  border: 1px solid transparent;
+  border-radius: var(--asbo-button-radius, 9px);
+  padding: 11px 18px;
+  background: none;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.asbo__button:hover {
+  transform: translateY(-1px);
+}
+
+.asbo__button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+  transform: none;
+}
+
+.asbo__button--primary {
+  border-color: var(--asbo-gold-dark);
+  background: var(--asbo-gold);
+  color: var(--asbo-gold-text, var(--asbo-navy));
+  box-shadow: 0 5px 14px rgba(215, 159, 19, 0.18);
+}
+
+.asbo__button--primary:hover {
+  background: var(--asbo-gold-hover, #f7c94f);
+  box-shadow: 0 7px 18px rgba(215, 159, 19, 0.24);
+}
+
+.asbo__button--ghost {
+  border-color: #cfd5df;
+  background: #fff;
+  color: var(--asbo-navy);
+}
+
+.asbo__button--ghost:hover {
+  border-color: var(--asbo-navy);
+  background: #f7f8fb;
+}
+
+.asbo__notice {
+  margin: 0 0 24px;
+  border: 1px solid #e5b9b5;
+  border-left: 4px solid var(--asbo-danger);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: #fff7f6;
+  color: #8b312d;
+  font-weight: 700;
+}
+
+.asbo__notice[data-type="success"] {
+  border-color: #b9ddc9;
+  border-left-color: var(--asbo-success);
+  background: #f2fbf6;
+  color: var(--asbo-success);
+}
+
+.asbo__intro {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(310px, 0.82fr);
+  gap: clamp(40px, 7vw, 86px);
+  align-items: center;
+  min-height: 470px;
+  padding: clamp(46px, 7vw, 78px);
+  border: 1px solid var(--asbo-border);
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: var(--asbo-shadow);
+}
+
+.asbo__intro::before {
+  position: absolute;
+  top: 0;
+  left: clamp(46px, 7vw, 78px);
+  width: 74px;
+  height: 4px;
+  border-radius: 0 0 4px 4px;
+  background: var(--asbo-gold);
+  content: "";
+}
+
+.asbo__intro h1 {
+  max-width: 680px;
+  margin: 0 0 22px;
+  color: var(--asbo-navy);
+  font-family: inherit;
+  font-size: clamp(42px, 5.5vw, 66px);
+  font-weight: 800;
+  line-height: 1.02;
+  letter-spacing: -0.045em;
+}
+
+.asbo__intro-copy > p:first-of-type {
+  max-width: 690px;
+  margin: 0;
+  color: #525d71;
+  font-size: clamp(17px, 1.8vw, 20px);
+  line-height: 1.7;
+}
+
+.asbo__production-note {
+  max-width: 690px;
+  margin: 25px 0 0 !important;
+  border-left: 3px solid var(--asbo-gold);
+  border-radius: 0 8px 8px 0;
+  padding: 12px 15px;
+  background: var(--asbo-surface-warm);
+  color: #6a5315 !important;
+  font-size: 13px !important;
+  font-weight: 700;
+  line-height: 1.55 !important;
+}
+
+.asbo__eyebrow {
+  display: none;
+}
+
+.asbo__benefits {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--asbo-border);
+  border-radius: 16px;
+  background: var(--asbo-surface);
+}
+
+.asbo__benefits-label {
+  margin: 0;
+  padding: 18px 20px 12px;
+  color: var(--asbo-navy);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.asbo__benefits > div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 13px;
+  align-items: start;
+  padding: 17px 20px;
+  border-top: 1px solid #e4e7ed;
+}
+
+.asbo__benefit-mark {
+  position: relative;
+  width: 25px;
+  height: 25px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--asbo-gold);
+}
+
+.asbo__benefit-mark::after {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  width: 10px;
+  height: 6px;
+  border-bottom: 2px solid var(--asbo-navy);
+  border-left: 2px solid var(--asbo-navy);
+  content: "";
+  transform: rotate(-45deg);
+}
+
+.asbo__benefits > div > span:last-child {
+  display: grid;
+  gap: 4px;
+}
+
+.asbo__benefits strong {
+  color: var(--asbo-navy);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.asbo__benefits small {
+  color: var(--asbo-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.asbo__section-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: clamp(28px, 5vw, 70px);
+  align-items: end;
+  margin: 58px 0 24px;
+  padding-bottom: 21px;
+  border-bottom: 1px solid var(--asbo-border);
+}
+
+.asbo__section-heading h2 {
+  margin: 0;
+  color: var(--asbo-navy);
+  font-family: inherit;
+  font-size: clamp(34px, 4.3vw, 50px);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+}
+
+.asbo__section-heading > p {
+  margin: 0;
+  color: var(--asbo-muted);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.asbo__products {
+  display: grid;
+  gap: 12px;
+}
+
+.asbo__product {
+  overflow: hidden;
+  border: 1px solid var(--asbo-border);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(17, 25, 45, 0.04);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.asbo__product:hover {
+  border-color: #cfd5df;
+  transform: translateY(-1px);
+}
+
+.asbo__product.is-open {
+  border-color: #bbc4d1;
+  box-shadow: 0 12px 32px rgba(17, 25, 45, 0.08);
+}
+
+.asbo__product.is-open::before {
+  display: block;
+  height: 3px;
+  background: var(--asbo-gold);
+  content: "";
+}
+
+.asbo__product-trigger {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) auto 38px;
+  gap: 16px;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  padding: 13px 18px 13px 13px;
+  background: #fff;
+  color: var(--asbo-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.asbo__product-thumb {
+  width: 74px;
+  height: 66px;
+  overflow: hidden;
+  border-radius: var(--asbo-button-radius, 9px);
+  background: var(--asbo-surface);
+}
+
+.asbo__product-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.asbo__product-title-wrap {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.asbo__product-title-wrap strong {
+  overflow: hidden;
+  color: var(--asbo-navy);
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asbo__product-title-wrap small {
+  color: var(--asbo-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.asbo__product-total-wrap {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  min-width: 96px;
+  text-align: right;
+}
+
+.asbo__product-total-wrap small {
+  color: var(--asbo-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.065em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.asbo__product-subtotal {
+  color: var(--asbo-navy);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.asbo__product-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--asbo-border-strong);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--asbo-navy);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.asbo__product.is-open .asbo__product-icon {
+  border-color: var(--asbo-gold-dark);
+  background: var(--asbo-gold);
+}
+
+.asbo__product-panel {
+  overflow: hidden;
+  max-height: 0;
+  padding: 0 clamp(26px, 4vw, 46px);
+  border-top: 0 solid var(--asbo-border);
+  background: #fbfcfe;
+  opacity: 0;
+  transition:
+    max-height 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.24s ease,
+    padding-top 0.34s ease,
+    padding-bottom 0.34s ease,
+    border-top-width 0.34s ease;
+}
+
+.asbo__product.is-open .asbo__product-panel {
+  padding-top: clamp(26px, 4vw, 46px);
+  padding-bottom: clamp(26px, 4vw, 46px);
+  border-top-width: 1px;
+  opacity: 1;
+}
+
+.asbo__product-overview {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.78fr) minmax(0, 1.22fr);
+  gap: clamp(30px, 5vw, 60px);
+  align-items: center;
+}
+
+.asbo__featured-image {
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--asbo-border);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.asbo__featured-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 12px;
+}
+
+.asbo__product-copy h3 {
+  margin: 0 0 14px;
+  color: var(--asbo-navy);
+  font-family: inherit;
+  font-size: clamp(28px, 3.6vw, 42px);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+}
+
+.asbo__product-copy > p {
+  margin: 0;
+  color: var(--asbo-muted);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.asbo__text-button {
+  margin-top: 18px;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  padding: 0 0 3px;
+  background: transparent;
+  color: var(--asbo-navy);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.asbo__text-button:hover {
+  color: #2c4d82;
+}
+
+.asbo__size-chart {
+  margin-top: 14px;
+  border: 1px solid var(--asbo-border);
+  border-radius: 10px;
+  padding: 15px 17px;
+  background: #fff;
+  color: var(--asbo-muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.asbo__size-chart > :first-child {
+  margin-top: 0;
+}
+
+.asbo__size-chart > :last-child {
+  margin-bottom: 0;
+}
+
+.asbo__pricing-section,
+.asbo__decoration-section,
+.asbo__variants-section {
+  margin-top: 36px;
+  padding-top: 30px;
+  border-top: 1px solid var(--asbo-border);
+}
+
+.asbo__decoration-section h4,
+.asbo__section-title-row h4 {
+  margin: 0;
+  color: var(--asbo-navy);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.asbo__section-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.asbo__section-title-row p {
+  margin: 6px 0 0;
+  color: var(--asbo-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.asbo__stitch-policy-note {
+  margin: -2px 0 14px;
+  padding-left: 11px;
+  border-left: 2px solid var(--asbo-gold);
+  color: var(--asbo-muted);
+  font-size: clamp(12.5px, 0.18vw + 12px, 14px);
+  line-height: 1.5;
+}
+
+.asbo__stitch-policy-note strong {
+  color: var(--asbo-navy);
+  font-weight: 800;
+}
+
+.asbo__active-tier {
+  max-width: 340px;
+  border: 1px solid #ecd483;
+  border-radius: var(--asbo-button-radius, 9px);
+  padding: 9px 12px;
+  background: #fff9e8;
+  color: #6b5211;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.asbo__table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--asbo-border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.asbo__pricing-table {
+  width: 100%;
+  min-width: 650px;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.asbo__pricing-table th,
+.asbo__pricing-table td {
+  padding: 14px 16px;
+  border-right: 1px solid #edf0f4;
+  border-bottom: 1px solid #edf0f4;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.asbo__pricing-table tr:last-child th,
+.asbo__pricing-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.asbo__pricing-table th:last-child,
+.asbo__pricing-table td:last-child {
+  border-right: 0;
+}
+
+.asbo__pricing-table thead th {
+  background: #f4f6f9;
+  color: var(--asbo-navy);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.asbo__pricing-table tbody th {
+  color: var(--asbo-navy);
+  text-align: left;
+  font-weight: 800;
+}
+
+.asbo__pricing-table tr.is-active {
+  background: #fffcf4;
+}
+
+.asbo__pricing-table td.is-active {
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+  font-weight: 900;
+}
+
+.asbo__decoration-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.asbo__decoration-options label {
+  position: relative;
+  cursor: pointer;
+}
+
+.asbo__decoration-options input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.asbo__decoration-options span {
+  display: block;
+  min-width: 118px;
+  border: 1px solid var(--asbo-border-strong);
+  border-radius: 10px;
+  padding: 11px 16px;
+  background: #fff;
+  color: var(--asbo-navy);
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.asbo__decoration-options span:hover {
+  border-color: #9da8ba;
+}
+
+.asbo__decoration-options input:checked + span {
+  border-color: var(--asbo-navy);
+  background: var(--asbo-navy);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(17, 25, 45, 0.13);
+}
+
+.asbo__variant-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 14px;
+}
+
+.asbo__variant {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+  border: 1px solid var(--asbo-border);
+  border-radius: 12px;
+  padding: 10px;
+  background: #fff;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.asbo__variant:focus-within {
+  border-color: #aeb8c7;
+  box-shadow: 0 7px 20px rgba(17, 25, 45, 0.07);
+}
+
+.asbo__variant-image {
+  aspect-ratio: 1 / 0.78;
+  overflow: hidden;
+  border-radius: var(--asbo-button-radius, 9px);
+  background: var(--asbo-surface);
+}
+
+.asbo__variant-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 6px;
+}
+
+.asbo__variant > strong {
+  min-height: 38px;
+  color: var(--asbo-navy);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.asbo__variant > small {
+  color: var(--asbo-danger);
+  font-weight: 700;
+}
+
+.asbo__quantity {
+  display: grid;
+  grid-template-columns: 38px minmax(44px, 1fr) 38px;
+  overflow: hidden;
+  border: 1px solid var(--asbo-border-strong);
+  border-radius: var(--asbo-button-radius, 9px);
+  background: #fff;
+}
+
+.asbo__quantity button,
+.asbo__quantity input {
+  min-height: 40px;
+  border: 0;
+  background: #fff;
+  color: var(--asbo-navy);
+  text-align: center;
+  font: inherit;
+  font-weight: 800;
+}
+
+.asbo__quantity button {
+  background: var(--asbo-surface);
+  cursor: pointer;
+}
+
+.asbo__quantity button:hover {
+  background: var(--asbo-gold);
+}
+
+.asbo__quantity input {
+  width: 100%;
+  border-right: 1px solid var(--asbo-border);
+  border-left: 1px solid var(--asbo-border);
+  appearance: textfield;
+}
+
+.asbo__quantity input::-webkit-inner-spin-button,
+.asbo__quantity input::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.asbo__empty {
+  border: 1px dashed #b8c0cd;
+  border-radius: 14px;
+  padding: 40px 28px;
+  background: var(--asbo-surface);
+  text-align: center;
+}
+
+.asbo__empty h3 {
+  margin-top: 0;
+  color: var(--asbo-navy);
+}
+
+.asbo__empty p {
+  margin-bottom: 0;
+  color: var(--asbo-muted);
+}
+
+.asbo__artwork-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.22fr) minmax(310px, 0.78fr);
+  gap: 20px;
+}
+
+.asbo__artwork-card,
+.asbo__review-card {
+  border: 1px solid var(--asbo-border);
+  border-radius: 16px;
+  padding: clamp(22px, 4vw, 34px);
+  background: #fff;
+  box-shadow: 0 8px 26px rgba(17, 25, 45, 0.05);
+}
+
+.asbo__review-card {
+  border-top: 4px solid var(--asbo-gold);
+}
+
+.asbo__post-checkout-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 24px;
+  padding: 17px 18px;
+  border: 1px solid #dbe2ec;
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+
+.asbo__post-checkout-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--asbo-navy);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.asbo__post-checkout-note strong {
+  display: block;
+  color: var(--asbo-navy);
+  font-size: 16px;
+}
+
+.asbo__post-checkout-note p {
+  margin: 5px 0 0;
+  color: var(--asbo-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.asbo__stitch-allowance {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin: -6px 0 24px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--asbo-gold) 42%, var(--asbo-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--asbo-gold) 8%, #fff);
+}
+
+.asbo__stitch-allowance-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.asbo__stitch-allowance p {
+  margin: 1px 0 0;
+  color: var(--asbo-ink);
+  font-size: clamp(12.5px, 0.2vw + 12px, 14px);
+  line-height: 1.55;
+}
+
+.asbo__artwork-options {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.asbo__artwork-options legend {
+  margin-bottom: 10px;
+  color: var(--asbo-navy);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.asbo__artwork-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 15px 16px;
+  border: 1px solid var(--asbo-border);
+  border-radius: 11px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.asbo__artwork-option:hover {
+  border-color: #b8c2d0;
+  background: #fbfcfe;
+}
+
+.asbo__artwork-option input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--asbo-navy);
+}
+
+.asbo__artwork-option span {
+  display: grid;
+  gap: 4px;
+}
+
+.asbo__artwork-option strong {
+  color: var(--asbo-navy);
+  font-size: 15px;
+}
+
+.asbo__artwork-option small {
+  color: var(--asbo-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.asbo__artwork-option input:checked + span strong {
+  color: #8a6500;
+}
+
+.asbo__field {
+  display: grid;
+  gap: 8px;
+  margin-top: 22px;
+  color: var(--asbo-navy);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.asbo__field textarea,
+.asbo__field input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--asbo-border-strong);
+  border-radius: 10px;
+  padding: 13px 14px;
+  background: #fff;
+  color: var(--asbo-ink);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.asbo__field textarea {
+  resize: vertical;
+}
+
+.asbo__field textarea:focus,
+.asbo__field input[type="text"]:focus {
+  border-color: var(--asbo-navy-soft);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(29, 43, 75, 0.08);
+}
+
+.asbo__artwork-reminder {
+  margin: 18px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--asbo-border);
+  color: var(--asbo-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.asbo__review-card h3 {
+  margin: 0 0 10px;
+  color: var(--asbo-navy);
+  font-family: inherit;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.asbo__review-product {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 15px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--asbo-border);
+}
+
+.asbo__review-product > div {
+  display: grid;
+}
+
+.asbo__review-product span,
+.asbo__review-product li {
+  color: var(--asbo-muted);
+  font-size: 13px;
+}
+
+.asbo__review-product ul {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  padding-left: 18px;
+}
+
+.asbo__review-total {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  padding-top: 18px;
+  border-top: 2px solid var(--asbo-navy);
+  color: var(--asbo-navy);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.asbo__fine-print,
+.asbo__empty-review {
+  color: var(--asbo-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.asbo__sticky {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  border-top: 1px solid var(--asbo-border);
+  background: color-mix(in srgb, var(--asbo-sticky-bg, #ffffff) 97%, transparent);
+  color: var(--asbo-sticky-text, var(--asbo-ink));
+  box-shadow: 0 -12px 30px rgba(17, 25, 45, 0.11);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(100% + 14px));
+  visibility: hidden;
+  transition:
+    transform 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.24s ease,
+    visibility 0s linear 0.38s;
+}
+
+.asbo__sticky.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.asbo__sticky-inner {
+  display: grid;
+  grid-template-columns: auto auto minmax(260px, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  width: min(1180px, calc(100% - 28px));
+  min-height: 88px;
+  margin: 0 auto;
+}
+
+.asbo__sticky-stat {
+  display: grid;
+  gap: 2px;
+}
+
+.asbo__sticky-stat span {
+  color: var(--asbo-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.asbo__sticky-stat strong {
+  color: var(--asbo-navy);
+  font-size: 21px;
+}
+
+.asbo__incentives {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.asbo__incentives span {
+  border: 1px solid var(--asbo-border);
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: var(--asbo-surface);
+  color: var(--asbo-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.asbo__incentives span.is-unlocked {
+  border-color: #e6c457;
+  background: #fff8df;
+  color: #6b5211;
+}
+
+.asbo__sticky-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .asbo__topbar {
+    position: relative;
+    top: auto;
+    display: grid;
+  }
+
+  .asbo__progress {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .asbo__progress-step strong {
+    display: none;
+  }
+
+  .asbo__progress-step:not(:last-child)::after {
+    width: 38px;
+  }
+
+  .asbo__intro,
+  .asbo__section-heading,
+  .asbo__product-overview,
+  .asbo__artwork-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .asbo__intro {
+    min-height: auto;
+  }
+
+  .asbo__sticky-inner {
+    grid-template-columns: 1fr 1fr auto;
+    gap: 12px;
+    padding: 12px 0;
+  }
+
+  .asbo__incentives {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .asbo__sticky-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
+
+@media (max-width: 620px) {
+  .asbo {
+    padding: 20px 10px 190px;
+  }
+
+  .asbo__topbar {
+    margin-bottom: 22px;
+    padding: 11px;
+  }
+
+  .asbo__topbar > .asbo__button {
+    width: 100%;
+  }
+
+  .asbo__intro {
+    gap: 30px;
+    padding: 40px 24px 28px;
+    border-radius: 15px;
+  }
+
+  .asbo__intro::before {
+    left: 24px;
+  }
+
+  .asbo__intro h1 {
+    font-size: clamp(38px, 13vw, 52px);
+  }
+
+  .asbo__section-heading {
+    gap: 14px;
+    margin-top: 42px;
+  }
+
+  .asbo__product-trigger {
+    grid-template-columns: 58px minmax(0, 1fr) 35px;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .asbo__product-thumb {
+    width: 58px;
+    height: 54px;
+  }
+
+  .asbo__product-title-wrap strong {
+    font-size: 15px;
+  }
+
+  .asbo__product-total-wrap {
+    grid-column: 2;
+    justify-items: start;
+    text-align: left;
+  }
+
+  .asbo__product-subtotal {
+    font-size: 14px;
+  }
+
+  .asbo__product-icon {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    width: 34px;
+    height: 34px;
+  }
+
+  .asbo__product-panel {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .asbo__product.is-open .asbo__product-panel {
+    padding-top: 22px;
+    padding-bottom: 28px;
+  }
+
+  .asbo__section-title-row {
+    display: grid;
+  }
+
+  .asbo__active-tier {
+    max-width: none;
+    text-align: left;
+  }
+
+  .asbo__variant-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .asbo__sticky-inner {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .asbo__sticky-actions {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .asbo__sticky-actions .asbo__button {
+    flex: 1;
+  }
+
+  .asbo__incentives {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+/* v0.6 — integrated site layout: flatter, editorial, less card-like */
+.asbo {
+  padding-top: 0;
+}
+.asbo__topbar {
+  top: 0;
+  margin-bottom: 0;
+  padding: 18px 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.asbo__intro {
+  min-height: auto;
+  padding: clamp(64px, 8vw, 100px) 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+.asbo__intro::before {
+  left: 0;
+  width: 52px;
+}
+.asbo__benefits {
+  border-width: 1px 0;
+  border-radius: 0;
+  background: #fff;
+}
+.asbo__benefits > div {
+  padding-left: 0;
+  padding-right: 0;
+}
+.asbo__section-heading {
+  margin-top: 72px;
+}
+.asbo__product {
+  border-width: 1px 0 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.asbo__product:last-child {
+  border-bottom-width: 1px;
+}
+.asbo__product:hover,
+.asbo__product.is-open {
+  transform: none;
+  box-shadow: none;
+}
+.asbo__product.is-open::before {
+  display: none;
+}
+.asbo__product-trigger {
+  padding-left: 0;
+  padding-right: 0;
+}
+.asbo__product-panel {
+  padding-left: 0;
+  padding-right: 0;
+  background: #fff;
+}
+.asbo__artwork-card,
+.asbo__review-card {
+  border-width: 1px 0 0;
+  border-radius: 0;
+  padding-left: 0;
+  padding-right: 0;
+  box-shadow: none;
+}
+.asbo__review-card {
+  border-top-color: var(--asbo-gold);
+}
+@media (max-width: 620px) {
+  .asbo__intro {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .asbo__intro::before {
+    left: 0;
+  }
+}
+
+
+/* v1.1.1 — mobile progression: reduce redundant scrolling and keep pricing glanceable */
+@media (max-width: 767px) {
+  /* The accordion trigger already shows the product image and name. Repeating a
+     large hero image inside the open panel adds a full viewport of redundant
+     scrolling on phones, so the expanded view moves directly into details. */
+  .asbo__featured-image {
+    display: none !important;
+  }
+
+  .asbo__product-overview {
+    display: block;
+  }
+
+  /* The product name remains visible in the accordion row directly above. */
+  .asbo__product-copy h3 {
+    display: none;
+  }
+
+  .asbo__product-copy > p {
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .asbo__text-button {
+    margin-top: 12px;
+    font-size: 13px;
+  }
+
+  .asbo__product.is-open .asbo__product-panel {
+    padding-top: 14px;
+    padding-bottom: 22px;
+  }
+
+  .asbo__pricing-section,
+  .asbo__decoration-section,
+  .asbo__variants-section {
+    margin-top: 22px;
+    padding-top: 18px;
+  }
+
+  .asbo__section-title-row {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .asbo__decoration-section h4,
+  .asbo__section-title-row h4 {
+    font-size: 18px;
+  }
+
+  .asbo__section-title-row p {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .asbo__active-tier {
+    width: auto;
+    max-width: 100%;
+    justify-self: start;
+    padding: 7px 9px;
+    font-size: 11px;
+    line-height: 1.3;
+    text-align: left;
+  }
+
+  /* Fit the full tier matrix in the phone viewport. Horizontal tables create
+     extra swipe work during a step that users need to scan quickly. */
+  .asbo__table-scroll {
+    width: 100%;
+    overflow-x: hidden;
+    border-radius: 9px;
+  }
+
+  .asbo__pricing-table {
+    width: 100%;
+    min-width: 0 !important;
+    table-layout: fixed;
+  }
+
+  .asbo__pricing-table th,
+  .asbo__pricing-table td {
+    padding: 8px 3px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .asbo__pricing-table thead th {
+    font-size: 10px;
+  }
+
+  .asbo__pricing-table th:first-child,
+  .asbo__pricing-table td:first-child {
+    width: 82px;
+    padding-left: 7px;
+    padding-right: 5px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .asbo__pricing-table tbody th {
+    font-size: 11px;
+    line-height: 1.15;
+  }
+
+  .asbo__pricing-table .woocommerce-Price-amount,
+  .asbo__pricing-table .woocommerce-Price-currencySymbol {
+    font-size: inherit;
+  }
+
+  .asbo__decoration-options {
+    gap: 7px;
+    margin-top: 11px;
+  }
+
+  .asbo__decoration-options label {
+    flex: 1 1 calc(50% - 4px);
+  }
+
+  .asbo__decoration-options span {
+    min-width: 0;
+    padding: 9px 10px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 430px) {
+  .asbo__pricing-table th,
+  .asbo__pricing-table td {
+    padding: 7px 2px;
+    font-size: 10px;
+  }
+
+  .asbo__pricing-table thead th {
+    font-size: 9px;
+  }
+
+  .asbo__pricing-table th:first-child,
+  .asbo__pricing-table td:first-child {
+    width: 72px;
+    padding-left: 5px;
+    padding-right: 3px;
+  }
+}
+
+
+/* v1.1.2 — compact progression, on-demand product details, and savings summary */
+.asbo__section-heading {
+  margin-top: 54px;
+}
+
+.asbo__intro {
+  padding-top: clamp(52px, 6vw, 78px);
+  padding-bottom: clamp(52px, 6vw, 78px);
+}
+
+.asbo__product-trigger {
+  grid-template-columns: 64px minmax(0, 1fr) auto 36px;
+  gap: 13px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.asbo__product-thumb {
+  width: 64px;
+  height: 58px;
+}
+
+.asbo__product-title-wrap {
+  gap: 3px;
+}
+
+.asbo__product-title-wrap strong {
+  font-size: 16px;
+}
+
+.asbo__product-title-wrap small {
+  font-size: 12px;
+}
+
+.asbo__product.is-open .asbo__product-panel {
+  padding-top: 16px;
+  padding-bottom: 22px;
+}
+
+.asbo__product-quick-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.asbo__details-button {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  padding: 2px 0 3px;
+  background: transparent;
+  color: var(--asbo-navy);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.asbo__details-button:hover {
+  color: #2c4d82;
+}
+
+.asbo__pricing-section {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.asbo__decoration-section,
+.asbo__variants-section {
+  margin-top: 24px;
+  padding-top: 20px;
+}
+
+.asbo__section-title-row {
+  margin-bottom: 12px;
+}
+
+.asbo__section-title-row p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.asbo__pricing-table {
+  min-width: 580px;
+}
+
+.asbo__pricing-table th,
+.asbo__pricing-table td {
+  padding: 10px 11px;
+}
+
+.asbo__variant-grid {
+  grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+  gap: 10px;
+}
+
+.asbo__variant {
+  gap: 8px;
+  padding: 8px;
+}
+
+.asbo__variant-image {
+  aspect-ratio: 1 / 0.68;
+}
+
+.asbo__variant > strong {
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.asbo__price-range-separator {
+  padding: 0 1px;
+  color: var(--asbo-muted);
+}
+
+.asbo__sticky-inner {
+  grid-template-columns: auto auto auto minmax(220px, 1fr) auto;
+  gap: 16px;
+  min-height: 76px;
+}
+
+.asbo__sticky-stat strong {
+  font-size: 19px;
+}
+
+.asbo__sticky-stat--saved strong {
+  color: #177245;
+}
+
+.asbo__incentives span {
+  padding: 6px 9px;
+  font-size: 11px;
+}
+
+.asbo__product-modal[hidden] {
+  display: none !important;
+}
+
+.asbo__product-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 120000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.asbo__modal-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgba(17, 25, 45, 0.62);
+  cursor: default;
+}
+
+.asbo__modal-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(900px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--asbo-border);
+  border-radius: 16px;
+  padding: clamp(20px, 3vw, 32px);
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(17, 25, 45, 0.26);
+}
+
+.asbo__modal-close {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  float: right;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  margin: -4px -4px 4px 12px;
+  border: 1px solid var(--asbo-border);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--asbo-navy);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.asbo__modal-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+  gap: clamp(24px, 4vw, 42px);
+  align-items: start;
+}
+
+.asbo__modal-image {
+  aspect-ratio: 1 / 0.88;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--asbo-surface);
+}
+
+.asbo__modal-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 12px;
+}
+
+.asbo__modal-kicker {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--asbo-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.asbo__modal-copy h3 {
+  margin: 0 0 12px;
+  color: var(--asbo-navy);
+  font-size: clamp(26px, 3vw, 38px);
+  line-height: 1.08;
+}
+
+.asbo__modal-copy > p,
+.asbo__modal-specs {
+  color: var(--asbo-muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.asbo__modal-specs {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--asbo-border);
+}
+
+.asbo__modal-specs h4 {
+  margin: 0 0 10px;
+  color: var(--asbo-navy);
+  font-size: 16px;
+}
+
+body.asbo-modal-open {
+  overflow: hidden !important;
+}
+
+@media (max-width: 900px) {
+  .asbo__section-heading {
+    margin-top: 42px;
+  }
+
+  .asbo__sticky-inner {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+    gap: 10px 12px;
+  }
+
+  .asbo__incentives {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .asbo__sticky-actions {
+    grid-column: 4;
+    grid-row: 1;
+  }
+}
+
+@media (max-width: 767px) {
+  .asbo__pricing-table th,
+  .asbo__pricing-table td {
+    padding: 7px 2px;
+    font-size: 10px;
+    line-height: 1.15;
+  }
+
+  .asbo__pricing-table thead th {
+    font-size: 9px;
+  }
+
+  .asbo__pricing-table th:first-child,
+  .asbo__pricing-table td:first-child {
+    width: 72px;
+    padding-left: 5px;
+    padding-right: 3px;
+  }
+
+  .asbo__product-quick-actions {
+    justify-content: flex-start;
+    margin-bottom: 10px;
+  }
+
+  .asbo__pricing-section {
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  .asbo__modal-dialog {
+    max-height: calc(100vh - 28px);
+    border-radius: 13px;
+    padding: 18px;
+  }
+
+  .asbo__modal-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .asbo__modal-image {
+    aspect-ratio: 16 / 8;
+  }
+}
+
+@media (max-width: 620px) {
+  .asbo {
+    padding-bottom: 174px;
+  }
+
+  .asbo__section-heading {
+    margin-top: 34px;
+  }
+
+  .asbo__product-trigger {
+    grid-template-columns: 52px minmax(0, 1fr) 34px;
+    gap: 9px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .asbo__product-thumb {
+    width: 52px;
+    height: 48px;
+  }
+
+  .asbo__product.is-open .asbo__product-panel {
+    padding-top: 12px;
+    padding-bottom: 18px;
+  }
+
+  .asbo__decoration-section,
+  .asbo__variants-section {
+    margin-top: 18px;
+    padding-top: 16px;
+  }
+
+  .asbo__variant-grid {
+    gap: 8px;
+  }
+
+  .asbo__sticky-inner {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 9px 0;
+  }
+
+  .asbo__sticky-stat {
+    min-width: 0;
+  }
+
+  .asbo__sticky-stat span {
+    font-size: 9px;
+    letter-spacing: 0.04em;
+  }
+
+  .asbo__sticky-stat strong {
+    font-size: 17px;
+  }
+
+  .asbo__incentives {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    gap: 5px;
+  }
+
+  .asbo__incentives span {
+    padding: 5px 7px;
+    font-size: 10px;
+  }
+
+  .asbo__sticky-actions {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+}
+
+
+@media (max-width: 430px) {
+  .asbo__pricing-table th,
+  .asbo__pricing-table td {
+    padding: 6px 1px;
+    font-size: 9px;
+  }
+
+  .asbo__pricing-table thead th {
+    font-size: 8.5px;
+  }
+
+  .asbo__pricing-table th:first-child,
+  .asbo__pricing-table td:first-child {
+    width: 66px;
+    padding-left: 4px;
+    padding-right: 2px;
+  }
+}
+
+
+/* v1.1.3 — responsive readability, guided artwork step, customer-order reuse, idle cue */
+.asbo__button,
+.asbo__quantity button,
+.asbo__quantity input,
+.asbo__field input,
+.asbo__field select,
+.asbo__field textarea {
+  font-size: clamp(13px, 0.22vw + 12.4px, 15px);
+}
+
+.asbo__product-title-wrap strong {
+  font-size: clamp(14.5px, 0.32vw + 13.4px, 17px);
+  line-height: 1.25;
+}
+
+.asbo__product-title-wrap small,
+.asbo__product-total-wrap small {
+  font-size: clamp(11.5px, 0.18vw + 11px, 13px);
+}
+
+.asbo__details-button,
+.asbo__section-title-row p,
+.asbo__artwork-option small,
+.asbo__previous-order-login,
+.asbo__manual-order-reference summary {
+  font-size: clamp(12.5px, 0.2vw + 12px, 14px);
+}
+
+.asbo__section-title-row h3,
+.asbo__section-title-row h4,
+.asbo__artwork-options strong,
+.asbo__artwork-guide strong {
+  font-size: clamp(15px, 0.34vw + 14px, 18px);
+}
+
+.asbo__pricing-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.asbo__pricing-table th,
+.asbo__pricing-table td {
+  font-size: clamp(11.5px, 0.22vw + 11px, 13.5px);
+}
+
+.asbo__pricing-table th:first-child,
+.asbo__pricing-table td:first-child {
+  width: clamp(92px, 21%, 132px);
+}
+
+.asbo__sticky-stat span {
+  font-size: clamp(9.5px, 0.18vw + 9px, 11px);
+}
+
+.asbo__sticky-stat strong {
+  font-size: clamp(17px, 0.32vw + 16px, 20px);
+}
+
+.asbo__incentives span {
+  font-size: clamp(10.5px, 0.16vw + 10px, 12px);
+}
+
+.asbo__artwork-card {
+  position: relative;
+}
+
+.asbo__artwork-guide {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin: 22px 0 12px;
+}
+
+.asbo__artwork-guide--notes {
+  margin-top: 26px;
+}
+
+.asbo__artwork-guide-number {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--asbo-gold) 72%, #a17a00);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--asbo-gold) 82%, #fff);
+  color: var(--asbo-navy);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.asbo__artwork-guide p {
+  margin: 4px 0 0;
+  color: var(--asbo-muted);
+  font-size: clamp(12.5px, 0.2vw + 12px, 14px);
+  line-height: 1.5;
+}
+
+.asbo__artwork-options {
+  display: grid;
+  gap: 9px;
+}
+
+.asbo__artwork-option {
+  display: grid;
+  grid-template-columns: auto 38px minmax(0, 1fr) 26px;
+  gap: 11px;
+  align-items: center;
+  min-height: 70px;
+  border: 1px solid var(--asbo-border);
+  border-left: 4px solid #cbd4e2;
+  border-radius: 12px;
+  padding: 11px 13px 11px 10px;
+  background: #fff;
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.asbo__artwork-option:hover {
+  border-color: color-mix(in srgb, var(--asbo-gold) 42%, var(--asbo-border));
+  background: color-mix(in srgb, var(--asbo-gold) 4%, #fff);
+}
+
+.asbo__artwork-option.is-selected {
+  border-color: color-mix(in srgb, var(--asbo-gold) 72%, #d7ab24);
+  border-left-color: var(--asbo-gold);
+  background: color-mix(in srgb, var(--asbo-gold) 10%, #fff);
+  box-shadow: 0 6px 18px rgba(17, 25, 45, 0.06);
+}
+
+.asbo__artwork-option input {
+  accent-color: var(--asbo-gold);
+}
+
+.asbo__artwork-option-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--asbo-navy) 92%, #fff);
+  color: #fff;
+  font-size: 19px;
+  font-weight: 900;
+}
+
+.asbo__artwork-option.is-selected .asbo__artwork-option-icon {
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+}
+
+.asbo__artwork-option-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.asbo__artwork-option-check {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: transparent;
+  color: transparent;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.asbo__artwork-option.is-selected .asbo__artwork-option-check {
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+}
+
+.asbo__previous-order-box {
+  margin-top: 14px;
+  border: 1px solid color-mix(in srgb, var(--asbo-gold) 36%, var(--asbo-border));
+  border-radius: 12px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--asbo-gold) 6%, #fff);
+}
+
+.asbo__field select {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--asbo-border);
+  border-radius: 8px;
+  padding: 0 38px 0 12px;
+  background: #fff;
+  color: var(--asbo-ink);
+}
+
+.asbo__manual-order-reference {
+  margin-top: 10px;
+}
+
+.asbo__manual-order-reference summary {
+  color: var(--asbo-navy);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.asbo__manual-order-reference[open] summary {
+  margin-bottom: 10px;
+}
+
+.asbo__previous-order-login {
+  margin: 8px 0 0;
+  color: var(--asbo-muted);
+}
+
+.asbo__previous-order-login a {
+  color: var(--asbo-navy);
+  font-weight: 750;
+}
+
+.asbo__sticky-actions {
+  position: relative;
+}
+
+.asbo__idle-cue {
+  pointer-events: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 7px);
+  z-index: 2;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--asbo-gold) 76%, #a17a00);
+  border-radius: 50%;
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+  font-size: 20px;
+  font-weight: 900;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 220ms ease, transform 220ms ease;
+  box-shadow: 0 5px 16px rgba(17, 25, 45, 0.16);
+}
+
+.asbo__idle-cue.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  animation: asbo-idle-arrow 1.15s ease-in-out infinite;
+}
+
+@keyframes asbo-idle-arrow {
+  0%, 100% { margin-bottom: 0; }
+  50% { margin-bottom: -5px; }
+}
+
+@media (max-width: 900px) {
+  .asbo__pricing-table th,
+  .asbo__pricing-table td {
+    font-size: clamp(11px, 1.35vw, 12.5px);
+    padding: 8px 5px;
+  }
+
+  .asbo__pricing-table thead th {
+    font-size: clamp(10.5px, 1.2vw, 12px);
+  }
+}
+
+@media (max-width: 767px) {
+  .asbo__product-title-wrap strong {
+    font-size: clamp(14px, 3.75vw, 16px);
+  }
+
+  .asbo__product-title-wrap small,
+  .asbo__product-total-wrap small,
+  .asbo__details-button,
+  .asbo__section-title-row p,
+  .asbo__artwork-option small {
+    font-size: clamp(11.5px, 3.15vw, 13px);
+  }
+
+  .asbo__pricing-table th,
+  .asbo__pricing-table td {
+    padding: 6px 2px;
+    font-size: clamp(10.25px, 2.72vw, 11.75px);
+    line-height: 1.2;
+  }
+
+  .asbo__pricing-table thead th {
+    font-size: clamp(9.75px, 2.55vw, 11px);
+  }
+
+  .asbo__pricing-table th:first-child,
+  .asbo__pricing-table td:first-child {
+    width: 25%;
+    padding-left: 4px;
+    padding-right: 3px;
+  }
+
+  .asbo__artwork-option {
+    grid-template-columns: auto 34px minmax(0, 1fr) 24px;
+    gap: 8px;
+    min-height: 66px;
+    padding: 10px 10px 10px 8px;
+  }
+
+  .asbo__artwork-option-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 17px;
+  }
+}
+
+@media (max-width: 620px) {
+  .asbo__sticky-stat span {
+    font-size: clamp(9.5px, 2.5vw, 10.75px);
+  }
+
+  .asbo__sticky-stat strong {
+    font-size: clamp(16.5px, 4.45vw, 19px);
+  }
+
+  .asbo__incentives span {
+    font-size: clamp(10px, 2.7vw, 11.25px);
+  }
+
+  .asbo__button {
+    font-size: clamp(13px, 3.55vw, 14.5px);
+  }
+
+  .asbo__artwork-guide {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .asbo__artwork-guide-number {
+    width: 28px;
+    height: 28px;
+  }
+
+  .asbo__idle-cue {
+    bottom: calc(100% + 5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .asbo__sticky,
+  .asbo__product-panel,
+  .asbo__idle-cue {
+    transition: none !important;
+  }
+}
+@media (max-width: 620px) {
+  .asbo__stitch-allowance {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 13px 14px;
+  }
+
+  .asbo__stitch-allowance-label {
+    justify-self: start;
+  }
+
+  .asbo__stitch-policy-note {
+    margin-bottom: 12px;
+  }
+}
+
+
+
+/* v1.1.6 launch polish: collapsed pricing context, stronger decoration state, scoped subcategory filtering. */
+.asbo__product-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.asbo__product-meta-separator {
+  color: #b4bac5;
+}
+
+.asbo__starting-price {
+  color: var(--asbo-navy);
+  font-weight: 800;
+}
+
+.asbo__subcategory-filter {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--asbo-border);
+  border-radius: var(--asbo-card-radius, 14px);
+  background: var(--asbo-surface);
+}
+
+.asbo__subcategory-filter-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px 12px;
+}
+
+.asbo__subcategory-filter-copy strong {
+  color: var(--asbo-navy);
+  font-size: clamp(13px, 0.25vw + 12px, 15px);
+  font-weight: 850;
+}
+
+.asbo__subcategory-filter-copy small {
+  color: var(--asbo-muted);
+  font-size: clamp(12px, 0.2vw + 11px, 13px);
+}
+
+.asbo__subcategory-filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.asbo__subcategory-filter-options button {
+  min-height: 36px;
+  border: 1px solid var(--asbo-border-strong);
+  border-radius: 999px;
+  padding: 7px 13px;
+  background: #fff;
+  color: var(--asbo-navy);
+  font: inherit;
+  font-size: clamp(12px, 0.2vw + 11px, 13px);
+  font-weight: 800;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.asbo__subcategory-filter-options button:hover {
+  border-color: #9da8ba;
+}
+
+.asbo__subcategory-filter-options button.is-active {
+  border-color: var(--asbo-gold-dark);
+  background: var(--asbo-gold);
+  color: var(--asbo-navy);
+  box-shadow: 0 3px 10px rgba(17, 25, 45, 0.08);
+}
+
+.asbo__decoration-options span {
+  position: relative;
+  padding-right: 38px;
+}
+
+.asbo__decoration-options span::after {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  content: "✓";
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  opacity: 0;
+  transform: translateY(-50%) scale(0.8);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.asbo__decoration-options input:checked + span {
+  border-color: var(--asbo-gold);
+  box-shadow: inset 0 0 0 1px var(--asbo-gold), 0 4px 12px rgba(17, 25, 45, 0.14);
+}
+
+.asbo__decoration-options input:checked + span::after {
+  color: var(--asbo-gold);
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+@media (max-width: 767px) {
+  .asbo__subcategory-filter {
+    padding: 12px;
+  }
+
+  .asbo__subcategory-filter-options {
+    flex-wrap: nowrap;
+    margin-inline: -2px;
+    padding: 2px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .asbo__subcategory-filter-options button {
+    flex: 0 0 auto;
+    min-height: 38px;
+  }
+
+  .asbo__product-meta {
+    gap: 3px 5px;
+  }
+}
+
+
+/* v1.1.7 — directly accessible, low-contrast product details chip. */
+.asbo__product-summary {
+  position: relative;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto 38px;
+  gap: 13px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 0;
+  background: #fff;
+}
+.asbo__product-summary .asbo__product-trigger {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.asbo__product-summary .asbo__product-trigger:focus-visible { outline: 2px solid var(--asbo-gold-dark); outline-offset: -2px; }
+.asbo__product-summary .asbo__product-thumb,
+.asbo__product-summary .asbo__product-title-wrap,
+.asbo__product-summary .asbo__product-total-wrap,
+.asbo__product-summary .asbo__product-icon { position: relative; z-index: 2; pointer-events: none; }
+.asbo__product-title-line { display: flex; flex-wrap: wrap; gap: 5px 9px; align-items: center; min-width: 0; }
+.asbo__product-title-line > strong { min-width: 0; max-width: 100%; }
+.asbo__details-chip {
+  position: relative; z-index: 3; display: inline-flex; align-items: center; justify-content: center;
+  width: max-content; max-width: 100%; min-height: 28px; padding: 4px 10px;
+  border: 1px solid #cfd6e2; border-radius: 999px; background: #f7f8fa; color: #263653;
+  box-shadow: 0 1px 2px rgba(17,25,45,.04); font: inherit;
+  font-size: clamp(11.5px, .16vw + 11px, 12.5px); font-weight: 750; line-height: 1.2; white-space: nowrap;
+  pointer-events: auto; cursor: pointer; transition: background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease;
+}
+.asbo__details-chip:hover { border-color:#aeb9ca; background:#f1f3f6; color:var(--asbo-navy); }
+.asbo__details-chip:focus-visible { border-color:var(--asbo-gold-dark); outline:2px solid color-mix(in srgb,var(--asbo-gold) 72%,#fff); outline-offset:2px; background:#fffaf0; color:var(--asbo-navy); }
+.asbo__product.is-open .asbo__details-chip { border-color:#c3cad6; background:#f5f6f8; }
+@media (max-width:767px) {
+  .asbo__product-summary { grid-template-columns:58px minmax(0,1fr) 35px; gap:10px; padding:10px 0; }
+  .asbo__product-summary .asbo__product-total-wrap { grid-column:2; justify-items:start; text-align:left; }
+  .asbo__product-summary .asbo__product-icon { grid-column:3; grid-row:1 / span 2; width:34px; height:34px; }
+  .asbo__product-title-line { display:grid; justify-items:start; gap:5px; }
+  .asbo__details-chip { min-height:29px; padding:5px 9px; font-size:clamp(11.5px,3.1vw,12.5px); }
+}
+
+
+/* v1.1.8 — keep the pricing matrix readable on tablets and phones. */
+.asbo__table-scroll { max-width:100%; }
+@media (max-width:1100px) {
+  .asbo__table-scroll { overflow-x:auto !important; overflow-y:hidden; padding-bottom:4px; overscroll-behavior-inline:contain; scrollbar-width:thin; -webkit-overflow-scrolling:touch; }
+  .asbo__pricing-table { width:auto; min-width:100% !important; table-layout:auto !important; }
+  .asbo__pricing-table th,.asbo__pricing-table td { white-space:nowrap !important; font-variant-numeric:tabular-nums; }
+  .asbo__pricing-table th:first-child,.asbo__pricing-table td:first-child { position:sticky; left:0; z-index:2; width:132px !important; min-width:132px; box-shadow:1px 0 0 var(--asbo-border); overflow-wrap:normal !important; }
+  .asbo__pricing-table th:not(:first-child),.asbo__pricing-table td:not(:first-child) { min-width:70px; }
+  .asbo__pricing-table thead th:first-child { z-index:3; background:var(--asbo-surface); }
+  .asbo__pricing-table tbody th:first-child { background:#fff; }
+  .asbo__pricing-table tr.is-active tbody th:first-child { background:#fffcf4; }
+}
+@media (max-width:767px) {
+  .asbo__pricing-table th,.asbo__pricing-table td { padding-right:7px; padding-left:7px; }
+  .asbo__pricing-table th:first-child,.asbo__pricing-table td:first-child { width:122px !important; min-width:122px; }
+  .asbo__pricing-table th:not(:first-child),.asbo__pricing-table td:not(:first-child) { min-width:64px; }
+}
+
+CSS;
+    }
+
+    private static function inline_js(): string {
+        return <<<'JS'
+(() => {
+  'use strict';
+
+  const roots = document.querySelectorAll('[data-asbo-root]');
+  if (!roots.length || typeof ASBO_CONFIG === 'undefined') return;
+
+  const money = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: ASBO_CONFIG.currency || 'USD',
+  });
+
+  roots.forEach((root) => {
+    let currentStep = 1;
+    let submitting = false;
+
+    const topNext = root.querySelector('[data-next-step]');
+    const stickyNext = root.querySelector('[data-sticky-next]');
+    const backButton = root.querySelector('[data-back-step]');
+    const sticky = root.querySelector('[data-sticky-summary]');
+    const totalItemsEl = root.querySelector('[data-total-items]');
+    const grandTotalEl = root.querySelector('[data-grand-total]');
+    const totalSavedEl = root.querySelector('[data-total-saved]');
+    const reviewTotalEl = root.querySelector('[data-review-total]');
+    const reviewEl = root.querySelector('[data-order-review]');
+    const notice = root.querySelector('[data-notice]');
+    const artworkNotes = root.querySelector('[data-artwork-notes]');
+    const artworkPlanInputs = [...root.querySelectorAll('[data-artwork-plan]')];
+    const previousOrderSelect = root.querySelector('[data-previous-order-select]');
+    const previousOrderManual = root.querySelector('[data-previous-order-manual]');
+    const idleCue = root.querySelector('[data-idle-cue]');
+    const previousOrderField = root.querySelector('[data-previous-order-field]');
+
+    const productData = new Map();
+
+    root.querySelectorAll('[data-product]').forEach((productEl) => {
+      const jsonEl = productEl.querySelector('.asbo__pricing-data');
+      let pricing = {};
+      try {
+        pricing = JSON.parse(jsonEl?.textContent || '{}');
+      } catch (error) {
+        console.error('Invalid ASBO pricing data', error);
+      }
+
+      productData.set(productEl, {
+        productId: Number(productEl.dataset.productId || 0),
+        pricing,
+      });
+    });
+
+    const showNotice = (message, type = 'error') => {
+      if (!notice) return;
+      notice.textContent = message;
+      notice.dataset.type = type;
+      notice.hidden = false;
+      notice.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+
+    const clearNotice = () => {
+      if (!notice) return;
+      notice.hidden = true;
+      notice.textContent = '';
+    };
+
+    const selectedDecoration = (productEl) =>
+      productEl.querySelector('[data-decoration]:checked')?.value || '';
+
+    const getTier = (tiers, quantity) => {
+      const thresholds = Object.keys(tiers || {})
+        .map(Number)
+        .filter((n) => Number.isFinite(n) && n > 1)
+        .sort((a, b) => a - b);
+
+      let chosen = null;
+      thresholds.forEach((threshold) => {
+        if (quantity >= threshold) {
+          chosen = { threshold, price: Number(tiers[threshold]) };
+        }
+      });
+      return chosen;
+    };
+
+    const clampQuantity = (value) => {
+      const number = Number.parseInt(value, 10);
+      if (!Number.isFinite(number) || number < 0) return 0;
+      return Math.min(9999, number);
+    };
+
+    const selectedArtworkPlan = () =>
+      root.querySelector('[data-artwork-plan]:checked')?.value || 'upload_after_checkout';
+
+    const previousOrderValue = () => {
+      const selected = previousOrderSelect?.value?.trim() || '';
+      if (selected) return selected;
+      return previousOrderManual?.value?.trim() || '';
+    };
+
+    const updateArtworkPlanUI = () => {
+      const needsReference = selectedArtworkPlan() === 'previous_order';
+      if (previousOrderField) previousOrderField.hidden = !needsReference;
+
+      root.querySelectorAll('.asbo__artwork-option').forEach((option) => {
+        const input = option.querySelector('[data-artwork-plan]');
+        option.classList.toggle('is-selected', Boolean(input?.checked));
+      });
+    };
+
+    const setStickyVisible = (visible) => {
+      if (!sticky) return;
+      sticky.classList.toggle('is-visible', visible);
+      sticky.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    };
+
+    const animatePanel = (panel, open) => {
+      if (!panel) return;
+
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        panel.hidden = !open;
+        panel.style.maxHeight = open ? 'none' : '0px';
+        panel.style.opacity = open ? '1' : '0';
+        return;
+      }
+
+      panel.dataset.animating = 'true';
+
+      if (open) {
+        panel.hidden = false;
+        panel.style.maxHeight = '0px';
+        panel.style.opacity = '0';
+        void panel.offsetHeight;
+        panel.style.maxHeight = panel.scrollHeight + 'px';
+        panel.style.opacity = '1';
+      } else {
+        if (panel.hidden) return;
+        panel.style.maxHeight = panel.scrollHeight + 'px';
+        panel.style.opacity = '1';
+        void panel.offsetHeight;
+        panel.style.maxHeight = '0px';
+        panel.style.opacity = '0';
+      }
+
+      const finish = (event) => {
+        if (event && event.propertyName !== 'max-height') return;
+        panel.removeEventListener('transitionend', finish);
+        delete panel.dataset.animating;
+        if (open) {
+          panel.style.maxHeight = 'none';
+        } else {
+          panel.hidden = true;
+        }
+      };
+
+      panel.addEventListener('transitionend', finish);
+    };
+
+    const getProductSummary = (productEl) => {
+      const info = productData.get(productEl);
+      const decoration = selectedDecoration(productEl);
+      const inputs = [...productEl.querySelectorAll('[data-qty-input]')];
+      const lines = inputs
+        .map((input) => ({
+          productId: Number(input.dataset.productId),
+          variationId: Number(input.dataset.variationId),
+          variationLabel: input.dataset.variationLabel || 'Standard',
+          basePrice: Number.isFinite(Number.parseFloat(input.dataset.basePrice)) ? Number.parseFloat(input.dataset.basePrice) : null,
+          quantity: clampQuantity(input.value),
+          decoration,
+        }))
+        .filter((line) => line.quantity > 0);
+
+      const quantity = lines.reduce((sum, line) => sum + line.quantity, 0);
+      const tier = getTier(info?.pricing?.[decoration] || {}, quantity);
+      const normalSubtotal = lines.reduce((sum, line) => sum + ((line.basePrice ?? 0) * line.quantity), 0);
+      const subtotal = tier ? tier.price * quantity : normalSubtotal;
+      const bulkSavings = Math.max(0, normalSubtotal - subtotal);
+
+      return {
+        productId: info?.productId || 0,
+        productName: productEl.dataset.productName || productEl.querySelector('.asbo__product-title-wrap strong')?.textContent?.trim() || 'Unnamed product',
+        decoration,
+        quantity,
+        tier,
+        subtotal,
+        normalSubtotal,
+        bulkSavings,
+        usingBasePrice: quantity > 0 && !tier,
+        lines,
+      };
+    };
+
+    const allSummaries = () =>
+      [...root.querySelectorAll('[data-product]')].map(getProductSummary);
+
+    const orderTotals = () => {
+      const summaries = allSummaries();
+      const items = summaries.reduce((sum, item) => sum + item.quantity, 0);
+      const total = summaries.reduce((sum, item) => sum + item.subtotal, 0);
+      const bulkSavings = summaries.reduce((sum, item) => sum + item.bulkSavings, 0);
+      const digitizingSavings = items >= Number(ASBO_CONFIG.freeArtQty) ? Number(ASBO_CONFIG.digitizingSavingsAmount || 0) : 0;
+      const shippingSavings = items >= Number(ASBO_CONFIG.freeShipQty) ? Number(ASBO_CONFIG.shippingSavingsAmount || 0) : 0;
+      return {
+        summaries,
+        items,
+        total,
+        savings: Math.max(0, bulkSavings + digitizingSavings + shippingSavings),
+      };
+    };
+
+    const saveState = () => {
+      const quantities = {};
+      root.querySelectorAll('[data-qty-input]').forEach((input) => {
+        quantities[`${input.dataset.productId}:${input.dataset.variationId}`] = clampQuantity(input.value);
+      });
+
+      const decorations = {};
+      root.querySelectorAll('[data-product]').forEach((productEl) => {
+        decorations[productEl.dataset.productId] = selectedDecoration(productEl);
+      });
+
+      try {
+        localStorage.setItem(
+          ASBO_CONFIG.storageKey,
+          JSON.stringify({
+            quantities,
+            decorations,
+            notes: artworkNotes?.value || '',
+            artworkPlan: selectedArtworkPlan(),
+            previousOrder: previousOrderValue(),
+          })
+        );
+      } catch (error) {
+        // Storage may be disabled. The form still works without persistence.
+      }
+    };
+
+    const restoreState = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem(ASBO_CONFIG.storageKey) || '{}');
+        Object.entries(saved.quantities || {}).forEach(([key, quantity]) => {
+          const [productId, variationId] = key.split(':');
+          const input = root.querySelector(
+            `[data-qty-input][data-product-id="${CSS.escape(productId)}"][data-variation-id="${CSS.escape(variationId)}"]`
+          );
+          if (input) input.value = clampQuantity(quantity);
+        });
+
+        Object.entries(saved.decorations || {}).forEach(([productId, decoration]) => {
+          const productEl = root.querySelector(`[data-product-id="${CSS.escape(productId)}"]`);
+          const radio = [...(productEl?.querySelectorAll('[data-decoration]') || [])].find(
+            (input) => input.value === decoration
+          );
+          if (radio) radio.checked = true;
+        });
+
+        if (artworkNotes && saved.notes) artworkNotes.value = saved.notes;
+        if (saved.previousOrder) {
+          const value = String(saved.previousOrder);
+          if (previousOrderSelect && [...previousOrderSelect.options].some((option) => option.value === value)) {
+            previousOrderSelect.value = value;
+          } else if (previousOrderManual) {
+            previousOrderManual.value = value.startsWith('order:') ? '' : value;
+          }
+        }
+        if (saved.artworkPlan) {
+          const planInput = artworkPlanInputs.find((input) => input.value === saved.artworkPlan);
+          if (planInput) planInput.checked = true;
+        }
+        updateArtworkPlanUI();
+      } catch (error) {
+        // Ignore malformed saved state.
+      }
+    };
+
+    const renderReview = (summaries) => {
+      if (!reviewEl) return;
+      const selected = summaries.filter((summary) => summary.quantity > 0);
+
+      if (!selected.length) {
+        reviewEl.innerHTML = '<p class="asbo__empty-review">No garments or headwear selected yet.</p>';
+        return;
+      }
+
+      reviewEl.innerHTML = selected
+        .map(
+          (summary) => `
+            <div class="asbo__review-product">
+              <div>
+                <strong>${escapeHtml(summary.productName)}</strong>
+                <span>${escapeHtml(summary.decoration)} · ${summary.quantity} items</span>
+              </div>
+              <strong>${money.format(summary.subtotal)}</strong>
+              <ul>
+                ${summary.lines
+                  .map((line) => `<li>${escapeHtml(line.variationLabel)}: ${line.quantity}</li>`)
+                  .join('')}
+              </ul>
+            </div>
+          `
+        )
+        .join('');
+    };
+
+    const updateUI = () => {
+      const { summaries, items, total, savings } = orderTotals();
+
+      summaries.forEach((summary) => {
+        const productEl = root.querySelector(`[data-product-id="${CSS.escape(String(summary.productId))}"]`);
+        if (!productEl) return;
+
+        const subtotalEl = productEl.querySelector('[data-product-subtotal]');
+        const quantityLabel = productEl.querySelector('[data-product-quantity-label]');
+        const activeTier = productEl.querySelector('[data-active-tier]');
+
+        if (subtotalEl) subtotalEl.textContent = money.format(summary.subtotal);
+        if (quantityLabel) {
+          quantityLabel.textContent = summary.quantity
+            ? `${summary.quantity} piece${summary.quantity === 1 ? '' : 's'} selected`
+            : 'No pieces selected';
+        }
+
+        productEl.querySelectorAll('[data-pricing-row]').forEach((row) => row.classList.remove('is-active'));
+        productEl.querySelectorAll('[data-threshold]').forEach((cell) => cell.classList.remove('is-active'));
+
+        if (summary.tier) {
+          if (activeTier) {
+            activeTier.textContent = `${summary.quantity} pieces · ${money.format(summary.tier.price)} each`;
+          }
+          const row = [...productEl.querySelectorAll('[data-pricing-row]')].find(
+            (candidate) => candidate.dataset.pricingRow === summary.decoration
+          );
+          row?.classList.add('is-active');
+          row?.querySelector(`[data-threshold="${summary.tier.threshold}"]`)?.classList.add('is-active');
+        } else if (summary.usingBasePrice) {
+          if (activeTier) {
+            activeTier.textContent = `${summary.quantity} piece${summary.quantity === 1 ? '' : 's'} · normal price`;
+          }
+          const row = [...productEl.querySelectorAll('[data-pricing-row]')].find(
+            (candidate) => candidate.dataset.pricingRow === summary.decoration
+          );
+          row?.classList.add('is-active');
+          row?.querySelector('[data-threshold="1"]')?.classList.add('is-active');
+        } else if (activeTier) {
+          activeTier.textContent = 'Enter quantities to calculate your pricing tier';
+        }
+      });
+
+      if (totalItemsEl) totalItemsEl.textContent = String(items);
+      if (grandTotalEl) grandTotalEl.textContent = money.format(total);
+      if (totalSavedEl) totalSavedEl.textContent = money.format(savings);
+      if (reviewTotalEl) reviewTotalEl.textContent = money.format(total);
+
+      const artIncentive = root.querySelector('[data-art-incentive]');
+      const shipIncentive = root.querySelector('[data-ship-incentive]');
+      artIncentive?.classList.toggle('is-unlocked', items >= Number(ASBO_CONFIG.freeArtQty));
+      shipIncentive?.classList.toggle('is-unlocked', items >= Number(ASBO_CONFIG.freeShipQty));
+
+      renderReview(summaries);
+      saveState();
+    };
+
+    const setStep = (step) => {
+      currentStep = Math.max(1, Math.min(3, step));
+      clearNotice();
+
+      root.querySelectorAll('[data-step-panel]').forEach((panel) => {
+        const active = Number(panel.dataset.stepPanel) === currentStep;
+        panel.hidden = !active;
+        panel.classList.toggle('is-active', active);
+      });
+
+      root.querySelectorAll('[data-progress-step]').forEach((indicator) => {
+        const indicatorStep = Number(indicator.dataset.progressStep);
+        indicator.classList.toggle('is-active', indicatorStep === currentStep);
+        indicator.classList.toggle('is-complete', indicatorStep < currentStep);
+      });
+
+      // Keep the summary/action bar available for the entire ASBO workflow,
+      // including Intro. If the ASBO block is present, the bottom bar is present.
+      setStickyVisible(true);
+      if (backButton) backButton.hidden = currentStep < 2;
+
+      if (currentStep === 1) {
+        if (topNext) topNext.textContent = ASBO_CONFIG.buttonTexts.selectProducts;
+        if (stickyNext) stickyNext.textContent = ASBO_CONFIG.buttonTexts.selectProducts;
+      } else if (currentStep === 2) {
+        if (topNext) topNext.textContent = ASBO_CONFIG.buttonTexts.nextArtwork;
+        if (stickyNext) stickyNext.textContent = ASBO_CONFIG.buttonTexts.nextArtwork;
+      } else {
+        if (topNext) topNext.textContent = ASBO_CONFIG.buttonTexts.continueCheckout;
+        if (stickyNext) stickyNext.textContent = ASBO_CONFIG.buttonTexts.continueCheckout;
+      }
+
+      updateUI();
+      root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    const submitOrder = async () => {
+      if (submitting) return;
+
+      if (selectedArtworkPlan() === 'previous_order' && !previousOrderValue()) {
+        showNotice(ASBO_CONFIG.messages.choosePreviousOrder);
+        if (previousOrderSelect) previousOrderSelect.focus();
+        else previousOrderManual?.focus();
+        return;
+      }
+
+      const { summaries, items } = orderTotals();
+      if (!items) {
+        setStep(2);
+        showNotice(ASBO_CONFIG.messages.chooseItem);
+        return;
+      }
+
+      const selections = summaries.flatMap((summary) => summary.lines);
+      const form = new FormData();
+      form.append('action', 'asbo_add_bulk_to_cart');
+      form.append('nonce', ASBO_CONFIG.nonce);
+      form.append('selections', JSON.stringify(selections));
+      form.append('artworkNotes', artworkNotes?.value || '');
+      form.append('artworkPlan', selectedArtworkPlan());
+      form.append('previousOrder', previousOrderValue());
+
+      submitting = true;
+      [topNext, stickyNext].forEach((button) => {
+        if (button) {
+          button.disabled = true;
+          button.textContent = ASBO_CONFIG.messages.working;
+        }
+      });
+
+      try {
+        const response = await fetch(ASBO_CONFIG.ajaxUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          body: form,
+        });
+        const payload = await response.json();
+
+        if (!response.ok || !payload.success) {
+          throw new Error(payload?.data?.message || ASBO_CONFIG.messages.error);
+        }
+
+        try {
+          localStorage.removeItem(ASBO_CONFIG.storageKey);
+        } catch (error) {
+          // Ignore storage errors.
+        }
+
+        window.location.assign(payload.data.checkoutUrl || ASBO_CONFIG.checkoutUrl);
+      } catch (error) {
+        showNotice(error.message || ASBO_CONFIG.messages.error);
+        submitting = false;
+        [topNext, stickyNext].forEach((button) => {
+          if (button) button.disabled = false;
+        });
+        setStep(3);
+      }
+    };
+
+    const goNext = () => {
+      if (currentStep === 1) {
+        setStep(2);
+        return;
+      }
+
+      if (currentStep === 2) {
+        const { items } = orderTotals();
+        if (!items) {
+          showNotice(ASBO_CONFIG.messages.chooseItem);
+          return;
+        }
+        setStep(3);
+        return;
+      }
+
+      submitOrder();
+    };
+
+    // One-time inactivity cue: after 30 seconds with no user activity, point
+    // toward the current sticky action. The first subsequent activity hides it and
+    // permanently consumes the cue for this page view.
+    let idleCueTimer = null;
+    let idleCueShown = false;
+    let idleCueConsumed = false;
+
+    const hideIdleCue = () => {
+      if (!idleCue) return;
+      idleCue.classList.remove('is-visible');
+      idleCue.setAttribute('aria-hidden', 'true');
+    };
+
+    const showIdleCue = () => {
+      if (!idleCue || idleCueShown || idleCueConsumed || submitting || !stickyNext || stickyNext.disabled) return;
+      idleCueShown = true;
+      idleCue.classList.add('is-visible');
+      idleCue.setAttribute('aria-hidden', 'false');
+    };
+
+    const scheduleIdleCue = () => {
+      if (idleCueConsumed || idleCueShown) return;
+      window.clearTimeout(idleCueTimer);
+      idleCueTimer = window.setTimeout(showIdleCue, 30000);
+    };
+
+    const registerActivity = () => {
+      if (idleCueShown) {
+        hideIdleCue();
+        idleCueConsumed = true;
+        window.clearTimeout(idleCueTimer);
+        return;
+      }
+      scheduleIdleCue();
+    };
+
+    ['pointerdown', 'keydown', 'input', 'change', 'wheel', 'touchstart'].forEach((eventName) => {
+      window.addEventListener(eventName, registerActivity, { passive: true });
+    });
+    window.addEventListener('scroll', registerActivity, { passive: true });
+    scheduleIdleCue();
+
+    root.addEventListener('click', (event) => {
+      const filterButton = event.target.closest('[data-subcategory-filter-value]');
+      if (filterButton) {
+        const value = filterButton.dataset.subcategoryFilterValue || 'all';
+        const filter = filterButton.closest('[data-subcategory-filter]');
+
+        filter?.querySelectorAll('[data-subcategory-filter-value]').forEach((button) => {
+          const active = button === filterButton;
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-pressed', String(active));
+        });
+
+        root.querySelectorAll('[data-product]').forEach((productEl) => {
+          const slugs = (productEl.dataset.subcategories || '').split(/\s+/).filter(Boolean);
+          const visible = value === 'all' || slugs.includes(value);
+
+          if (!visible) {
+            const openTrigger = productEl.querySelector('.asbo__product-trigger[aria-expanded="true"]');
+            if (openTrigger) {
+              openTrigger.setAttribute('aria-expanded', 'false');
+              const icon = productEl.querySelector('.asbo__product-icon');
+              if (icon) icon.textContent = '+';
+              productEl.classList.remove('is-open');
+              animatePanel(productEl.querySelector('.asbo__product-panel'), false);
+            }
+          }
+
+          productEl.hidden = !visible;
+        });
+        return;
+      }
+
+      const trigger = event.target.closest('.asbo__product-trigger');
+      if (trigger) {
+        const productEl = trigger.closest('[data-product]');
+        const panel = productEl?.querySelector('.asbo__product-panel');
+        if (!productEl || !panel) return;
+
+        const expanded = trigger.getAttribute('aria-expanded') === 'true';
+        const opening = !expanded;
+
+        // Keep a single product expanded at a time on every viewport. The customer
+        // keeps the current pricing task in context without accumulating long open
+        // sections above and below the product they are actively configuring.
+        if (opening) {
+          root.querySelectorAll('.asbo__product-trigger[aria-expanded="true"]').forEach((otherTrigger) => {
+            if (otherTrigger === trigger) return;
+            const otherProduct = otherTrigger.closest('[data-product]');
+            const otherPanel = otherProduct?.querySelector('.asbo__product-panel');
+            otherTrigger.setAttribute('aria-expanded', 'false');
+            const otherIcon = otherProduct?.querySelector('.asbo__product-icon');
+            if (otherIcon) otherIcon.textContent = '+';
+            otherProduct?.classList.remove('is-open');
+            animatePanel(otherPanel, false);
+          });
+        }
+
+        trigger.setAttribute('aria-expanded', String(opening));
+        const icon = productEl.querySelector('.asbo__product-icon');
+        if (icon) icon.textContent = opening ? '−' : '+';
+        productEl.classList.toggle('is-open', opening);
+        animatePanel(panel, opening);
+        return;
+      }
+
+      const detailsOpen = event.target.closest('[data-product-details-open]');
+      if (detailsOpen) {
+        const productEl = detailsOpen.closest('[data-product]');
+        const modal = productEl?.querySelector('[data-product-modal]');
+        if (modal) {
+          modal.hidden = false;
+          modal.dataset.returnFocus = 'true';
+          detailsOpen.dataset.modalReturnFocus = 'true';
+          document.body.classList.add('asbo-modal-open');
+          requestAnimationFrame(() => modal.querySelector('.asbo__modal-close')?.focus());
+        }
+        return;
+      }
+
+      const detailsClose = event.target.closest('[data-product-details-close]');
+      if (detailsClose) {
+        const modal = detailsClose.closest('[data-product-modal]');
+        if (modal) {
+          modal.hidden = true;
+          document.body.classList.remove('asbo-modal-open');
+          const productEl = modal.closest('[data-product]');
+          const opener = productEl?.querySelector('[data-modal-return-focus="true"]');
+          if (opener) {
+            delete opener.dataset.modalReturnFocus;
+            opener.focus();
+          }
+        }
+        return;
+      }
+
+      const plus = event.target.closest('[data-qty-plus]');
+      const minus = event.target.closest('[data-qty-minus]');
+      if (plus || minus) {
+        const input = event.target.closest('.asbo__quantity')?.querySelector('[data-qty-input]');
+        if (!input) return;
+        const next = clampQuantity(input.value) + (plus ? 1 : -1);
+        input.value = Math.max(0, next);
+        updateUI();
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      const modal = root.querySelector('[data-product-modal]:not([hidden])');
+      if (!modal) return;
+      modal.hidden = true;
+      document.body.classList.remove('asbo-modal-open');
+      const productEl = modal.closest('[data-product]');
+      const opener = productEl?.querySelector('[data-modal-return-focus="true"]');
+      if (opener) {
+        delete opener.dataset.modalReturnFocus;
+        opener.focus();
+      }
+    });
+
+    root.addEventListener('input', (event) => {
+      if (event.target.matches('[data-qty-input]')) {
+        event.target.value = clampQuantity(event.target.value);
+        updateUI();
+      }
+      if (event.target.matches('[data-artwork-notes]')) saveState();
+      if (event.target.matches('[data-previous-order-manual]')) {
+        if (previousOrderSelect) previousOrderSelect.value = '';
+        saveState();
+      }
+    });
+
+    root.addEventListener('change', (event) => {
+      if (event.target.matches('[data-decoration]')) updateUI();
+      if (event.target.matches('[data-artwork-plan]')) {
+        updateArtworkPlanUI();
+        saveState();
+      }
+      if (event.target.matches('[data-previous-order-select]')) {
+        if (event.target.value && previousOrderManual) previousOrderManual.value = '';
+        saveState();
+      }
+    });
+
+    topNext?.addEventListener('click', goNext);
+    stickyNext?.addEventListener('click', goNext);
+    backButton?.addEventListener('click', () => setStep(currentStep - 1));
+
+    restoreState();
+    updateArtworkPlanUI();
+    updateUI();
+    setStep(1);
+  });
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+})();
+JS;
+    }
+}
+
+require_once __DIR__ . '/includes/class-asbo-artwork-review.php';
+require_once __DIR__ . '/includes/class-asbo-account-experience.php';
+
+ASBO_Plugin::boot();
+ASBO_Artwork_Review::boot();
+ASBO_Account_Experience::boot();
