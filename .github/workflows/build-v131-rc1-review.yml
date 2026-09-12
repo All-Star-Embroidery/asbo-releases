@@ -1,0 +1,130 @@
+name: Build ASBO v1.3.1 RC1 Review Candidate
+
+on:
+  push:
+    branches:
+      - review-v1.3.1-rights-performance
+    paths:
+      - .seed-build-v131-rc1
+
+permissions:
+  contents: write
+
+jobs:
+  build-review-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout review branch
+        uses: actions/checkout@v4
+        with:
+          ref: review-v1.3.1-rights-performance
+          fetch-depth: 0
+
+      - name: Download exact production v1.3.0 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="All-Star-Embroidery/asbo-releases"
+          ZIP="all-star-bulk-order-block-1.3.0.zip"
+          ROOT="all-star-bulk-order-block-v1.0.0"
+          rm -rf /tmp/asbo-v131
+          mkdir -p /tmp/asbo-v131
+          gh release download v1.3.0 -R "$REPO" --pattern "$ZIP" --dir /tmp/asbo-v131
+          unzip -t "/tmp/asbo-v131/$ZIP" | grep -q "No errors detected"
+          unzip -q "/tmp/asbo-v131/$ZIP" -d /tmp/asbo-v131/unpacked
+          test -f "/tmp/asbo-v131/unpacked/$ROOT/all-star-bulk-order-block.php"
+
+      - name: Apply reviewed artwork-rights and performance patch
+        run: |
+          set -euo pipefail
+          ROOT="/tmp/asbo-v131/unpacked/all-star-bulk-order-block-v1.0.0"
+          base64 -d staging/v1.3.1-rc.1/apply_v131_rc1.py.gz.b64 | gzip -dc > /tmp/apply_v131_rc1.py
+          python -m py_compile /tmp/apply_v131_rc1.py
+          python /tmp/apply_v131_rc1.py "$ROOT"
+
+      - name: Validate PHP JSON and JavaScript
+        run: |
+          set -euo pipefail
+          ROOT="/tmp/asbo-v131/unpacked/all-star-bulk-order-block-v1.0.0"
+          while IFS= read -r -d '' phpfile; do php -l "$phpfile" >/dev/null; done < <(find "$ROOT" -type f -name '*.php' -print0)
+          python -m json.tool "$ROOT/block/block.json" >/dev/null
+          node --check "$ROOT/block/editor.js"
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          p = Path('/tmp/asbo-v131/unpacked/all-star-bulk-order-block-v1.0.0/all-star-bulk-order-block.php')
+          s = p.read_text()
+          m = re.search(r"private static function inline_js\(\): string \{\s*return <<<'JS'\n(.*?)\nJS;", s, re.S)
+          if not m:
+              raise SystemExit('inline_js heredoc not found')
+          Path('/tmp/asbo-inline.js').write_text(m.group(1))
+          PY
+          node --check /tmp/asbo-inline.js
+
+      - name: Regression and safety assertions
+        run: |
+          set -euo pipefail
+          ROOT="/tmp/asbo-v131/unpacked/all-star-bulk-order-block-v1.0.0"
+          MAIN="$ROOT/all-star-bulk-order-block.php"
+          ART="$ROOT/includes/class-asbo-artwork-review.php"
+          ACCOUNT="$ROOT/includes/class-asbo-account-experience.php"
+          grep -Fq "Version: 1.3.1-rc.1" "$MAIN"
+          grep -Fq "_asbo_pricing_matrix" "$MAIN"
+          grep -Fq "asbo_add_bulk_to_cart" "$MAIN"
+          grep -Fq "base_unit_price" "$MAIN"
+          grep -Fq "rightsConfirmed" "$MAIN"
+          grep -Fq "_asbo_artwork_rights_confirmed" "$MAIN"
+          grep -Fq "ARTWORK_RIGHTS_VERSION" "$MAIN"
+          grep -Fq "summaryCache" "$MAIN"
+          grep -Fq "product_term_map" "$MAIN"
+          grep -Fq "static $cache = array();" "$MAIN"
+          grep -Fq "asbo_artwork_rights" "$ART"
+          grep -Fq "Artwork rights" "$ART"
+          grep -Fq "record_rights_confirmation" "$ART"
+          if grep -Fq "'url'           => esc_url_raw( $result['url'] )" "$ART"; then
+            echo "New uploads still persist a public upload URL" >&2
+            exit 1
+          fi
+          grep -Fq "customer_orders( 50 )" "$ACCOUNT"
+          grep -Fq "asbo-account-experience', false, array(), '1.3.1-rc.1'" "$ACCOUNT"
+          if grep -Rq "add_fee(" "$ROOT"; then
+            echo "Unexpected WooCommerce fee mutation introduced" >&2
+            exit 1
+          fi
+          git fetch origin main
+          if ! git diff --quiet origin/main -- latest.json; then
+            echo "Production latest.json differs on review branch" >&2
+            exit 1
+          fi
+
+      - name: Build persistent review ZIP and source snapshot
+        run: |
+          set -euo pipefail
+          ROOTNAME="all-star-bulk-order-block-v1.0.0"
+          SRC="/tmp/asbo-v131/unpacked/$ROOTNAME"
+          OUT="candidates/v1.3.1-rc.1"
+          ZIP="all-star-bulk-order-block-1.3.1-rc.1.zip"
+          rm -rf "$OUT"
+          mkdir -p "$OUT/source"
+          cp -R "$SRC/." "$OUT/source/"
+          (
+            cd /tmp/asbo-v131/unpacked
+            zip -qr "$GITHUB_WORKSPACE/$OUT/$ZIP" "$ROOTNAME"
+          )
+          unzip -t "$OUT/$ZIP" | grep -q "No errors detected"
+          sha256sum "$OUT/$ZIP" > "$OUT/$ZIP.sha256"
+          du -h "$OUT/$ZIP"
+
+      - name: Commit review candidate only to review branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add candidates/v1.3.1-rc.1
+          if git diff --cached --quiet; then
+            echo "Candidate already current."
+            exit 0
+          fi
+          git commit -m "review: build ASBO v1.3.1-rc.1 candidate"
+          git push origin review-v1.3.1-rights-performance
