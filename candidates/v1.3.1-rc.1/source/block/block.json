@@ -1,0 +1,187 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "all-star/bulk-order",
+  "version": "1.3.1-rc.1",
+  "title": "All Star Bulk Order",
+  "category": "all-star-embroidery",
+  "icon": "products",
+  "description": "Editable All Star Embroidery bulk-order workflow.",
+  "textdomain": "all-star-bulk-order",
+  "attributes": {
+    "category": {
+      "type": "string",
+      "default": ""
+    },
+    "limit": {
+      "type": "number",
+      "default": 100
+    },
+    "welcomeTitle": {
+      "type": "string",
+      "default": "New here?"
+    },
+    "welcomeText": {
+      "type": "string",
+      "default": "Pick your garments and colors below \u2014 pricing updates live as you add quantities. Artwork and production details come next."
+    },
+    "productsTitle": {
+      "type": "string",
+      "default": "Select garments and headwear"
+    },
+    "productsText": {
+      "type": "string",
+      "default": "Open a style, choose embroidery or patch, then split the quantity across available colors. Pricing tiers use the combined quantity for that style and decoration method."
+    },
+    "artworkTitle": {
+      "type": "string",
+      "default": "Artwork plan and production details"
+    },
+    "artworkText": {
+      "type": "string",
+      "default": "Tell us how you\u2019ll provide the logo and share the production details we should review. The actual artwork file is uploaded after checkout, once a secure WooCommerce order number exists."
+    },
+    "checkoutTitle": {
+      "type": "string",
+      "default": "Review and continue to checkout"
+    },
+    "checkoutText": {
+      "type": "string",
+      "default": "The customer is sent to WooCommerce checkout, where shipping, taxes, payment, and order details are finalized."
+    },
+    "stepItemsLabel": {
+      "type": "string",
+      "default": "Items"
+    },
+    "stepArtworkLabel": {
+      "type": "string",
+      "default": "Artwork"
+    },
+    "stepCheckoutLabel": {
+      "type": "string",
+      "default": "Checkout"
+    },
+    "nextArtworkText": {
+      "type": "string",
+      "default": "Next: Artwork Plan"
+    },
+    "continueCheckoutText": {
+      "type": "string",
+      "default": "Continue to Checkout"
+    },
+    "backText": {
+      "type": "string",
+      "default": "Back"
+    },
+    "estimatedTotalLabel": {
+      "type": "string",
+      "default": "Estimated Total"
+    },
+    "piecesSelectedLabel": {
+      "type": "string",
+      "default": "Pieces Selected"
+    },
+    "totalSavedLabel": {
+      "type": "string",
+      "default": "Total Saved"
+    },
+    "productTotalLabel": {
+      "type": "string",
+      "default": "Selected total"
+    },
+    "digitizingIncentiveText": {
+      "type": "string",
+      "default": "pieces \u00b7 Digitizing + setup included"
+    },
+    "shippingIncentiveText": {
+      "type": "string",
+      "default": "pieces \u00b7 Standard shipping included"
+    },
+    "freeArtQty": {
+      "type": "number",
+      "default": 12
+    },
+    "freeShipQty": {
+      "type": "number",
+      "default": 24
+    },
+    "digitizingSavingsAmount": {
+      "type": "number",
+      "default": 15
+    },
+    "shippingSavingsAmount": {
+      "type": "number",
+      "default": 10
+    },
+    "primaryColor": {
+      "type": "string",
+      "default": "#f3bd2f"
+    },
+    "primaryHoverColor": {
+      "type": "string",
+      "default": "#f7c94f"
+    },
+    "primaryTextColor": {
+      "type": "string",
+      "default": "#11192d"
+    },
+    "navyColor": {
+      "type": "string",
+      "default": "#11192d"
+    },
+    "textColor": {
+      "type": "string",
+      "default": "#182033"
+    },
+    "mutedColor": {
+      "type": "string",
+      "default": "#687184"
+    },
+    "borderColor": {
+      "type": "string",
+      "default": "#e2e6ed"
+    },
+    "surfaceColor": {
+      "type": "string",
+      "default": "#f7f8fb"
+    },
+    "pageBackground": {
+      "type": "string",
+      "default": "#ffffff"
+    },
+    "stickyBackground": {
+      "type": "string",
+      "default": "#ffffff"
+    },
+    "stickyTextColor": {
+      "type": "string",
+      "default": "#182033"
+    },
+    "progressInactiveColor": {
+      "type": "string",
+      "default": "#8a92a2"
+    },
+    "buttonRadius": {
+      "type": "number",
+      "default": 9
+    },
+    "cardRadius": {
+      "type": "number",
+      "default": 14
+    }
+  },
+  "supports": {
+    "align": [
+      "wide",
+      "full"
+    ],
+    "html": false,
+    "spacing": {
+      "margin": true,
+      "padding": false
+    }
+  },
+  "editorScript": "file:./editor.js",
+  "editorStyle": "file:./editor.css",
+  "render": "file:./render.php"
+}
