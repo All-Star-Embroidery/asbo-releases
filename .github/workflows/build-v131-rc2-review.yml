@@ -1,0 +1,164 @@
+name: Build ASBO v1.3.1 RC2 Review Candidate
+
+on:
+  push:
+    branches:
+      - review-v1.3.1-rights-performance
+    paths:
+      - .seed-build-v131-rc2
+
+permissions:
+  contents: write
+
+jobs:
+  build-review-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout review branch
+        uses: actions/checkout@v4
+        with:
+          ref: review-v1.3.1-rights-performance
+          fetch-depth: 0
+
+      - name: Prepare exact RC1 review source
+        run: |
+          set -euo pipefail
+          SRC="candidates/v1.3.1-rc.1/source"
+          ROOT="all-star-bulk-order-block-v1.0.0"
+          test -f "$SRC/all-star-bulk-order-block.php"
+          rm -rf /tmp/asbo-v131-rc2
+          mkdir -p "/tmp/asbo-v131-rc2/$ROOT"
+          cp -R "$SRC/." "/tmp/asbo-v131-rc2/$ROOT/"
+
+      - name: Apply verified review fixes
+        run: |
+          set -euo pipefail
+          ROOT="/tmp/asbo-v131-rc2/all-star-bulk-order-block-v1.0.0"
+          python -m py_compile staging/v1.3.1-rc.2/apply_v131_rc2.py
+          python staging/v1.3.1-rc.2/apply_v131_rc2.py "$ROOT"
+
+      - name: Validate PHP JSON and JavaScript
+        run: |
+          set -euo pipefail
+          ROOT="/tmp/asbo-v131-rc2/all-star-bulk-order-block-v1.0.0"
+          while IFS= read -r -d '' phpfile; do php -l "$phpfile" >/dev/null; done < <(find "$ROOT" -type f -name '*.php' -print0)
+          python -m json.tool "$ROOT/block/block.json" >/dev/null
+          node --check "$ROOT/block/editor.js"
+          node --check "$ROOT/assets/asbo-frontend.js"
+          test -s "$ROOT/assets/asbo-frontend.css"
+          test -s "$ROOT/assets/asbo-account.css"
+
+      - name: Regression and compatibility assertions
+        run: |
+          set -euo pipefail
+          ROOT="/tmp/asbo-v131-rc2/all-star-bulk-order-block-v1.0.0"
+          MAIN="$ROOT/all-star-bulk-order-block.php"
+          ACCOUNT="$ROOT/includes/class-asbo-account-experience.php"
+          ART="$ROOT/includes/class-asbo-artwork-review.php"
+          BLOCK="$ROOT/block/block.json"
+          FRONTJS="$ROOT/assets/asbo-frontend.js"
+
+          grep -Fq "Version: 1.3.1-rc.2" "$MAIN"
+          grep -Fq "private const VERSION = '1.3.1-rc.2';" "$MAIN"
+          grep -Fq '"version": "1.3.1-rc.2"' "$BLOCK"
+
+          # Pricing / Supplier Sync boundaries must remain intact.
+          grep -Fq "_asbo_pricing_matrix" "$MAIN"
+          grep -Fq "WooCommerce Regular Price is the authoritative" "$MAIN"
+          grep -Fq "base_unit_price" "$MAIN"
+          grep -Fq "asbo_add_bulk_to_cart" "$MAIN"
+          if grep -Rq "add_fee(" "$ROOT"; then
+            echo "Unexpected WooCommerce fee mutation introduced" >&2
+            exit 1
+          fi
+
+          # Rights flow remains mandatory and now works on classic + Store API checkout.
+          grep -Fq "rightsConfirmed" "$FRONTJS"
+          grep -Fq "_asbo_artwork_rights_confirmed" "$MAIN"
+          grep -Fq "woocommerce_store_api_checkout_update_order_meta" "$MAIN"
+          grep -Fq "cart_checkout_blocks" "$MAIN"
+          grep -Fq "custom_order_tables" "$MAIN"
+
+          # Cached-page nonce protection and resubmit replacement.
+          grep -Fq "asbo_get_nonce" "$MAIN"
+          grep -Fq "nonceUrl" "$MAIN"
+          grep -Fq "cache: 'no-store'" "$FRONTJS"
+          grep -Fq "remove_cart_item( $existing_key )" "$MAIN"
+
+          # Multiple blocks use per-root config and one cacheable script.
+          grep -Fq "class=\"asbo__config\"" "$MAIN"
+          grep -Fq "root.dataset.asboReady" "$FRONTJS"
+          if grep -Fq "window.ASBO_CONFIG" "$MAIN"; then
+            echo "Global ASBO_CONFIG survived RC2" >&2
+            exit 1
+          fi
+          if grep -Fq "private static function inline_js" "$MAIN" || grep -Fq "private static function inline_css" "$MAIN"; then
+            echo "Large inline front-end assets survived RC2" >&2
+            exit 1
+          fi
+
+          # Account Artwork fallback renderer is live and account CSS is external.
+          grep -Fq "add_action( 'woocommerce_account_dashboard', array( __CLASS__, 'render_artwork_hub' ), 5 );" "$ACCOUNT"
+          grep -Fq "assets/asbo-account.css" "$ACCOUNT"
+          if grep -Fq "private static function css(): string" "$ACCOUNT"; then
+            echo "Large inline account CSS survived RC2" >&2
+            exit 1
+          fi
+
+          # Update failure cache and safer migration behavior.
+          grep -Fq "UPDATE_FAILURE_CACHE_TTL" "$MAIN"
+          grep -Fq "asbo_enable_auto_updates" "$MAIN"
+          grep -Fq "admin_init', array( __CLASS__, 'repair_catalog_titles'" "$MAIN"
+          grep -Fq "asbo_catalog_title_repair_lock" "$MAIN"
+
+          # Block registration now has one PHP render path and explicit editor deps.
+          if grep -Fq '"render"' "$BLOCK"; then
+            echo "block.json still declares the dead render.php path" >&2
+            exit 1
+          fi
+          test ! -e "$ROOT/block/render.php"
+          test -f "$ROOT/block/editor.asset.php"
+
+          # Artwork storage must fail closed if protection files cannot be written.
+          grep -Fq "private static function ensure_protected_artwork_directory(): bool" "$ART"
+          grep -Fq "Artwork storage could not be secured" "$ART"
+
+          # Existing installed folder name is intentionally retained for safe in-place updates.
+          test "$(basename "$ROOT")" = "all-star-bulk-order-block-v1.0.0"
+
+          git fetch origin main
+          if ! git diff --quiet origin/main -- latest.json; then
+            echo "Production latest.json differs on review branch" >&2
+            exit 1
+          fi
+
+      - name: Build persistent RC2 review ZIP and source snapshot
+        run: |
+          set -euo pipefail
+          ROOTNAME="all-star-bulk-order-block-v1.0.0"
+          SRC="/tmp/asbo-v131-rc2/$ROOTNAME"
+          OUT="candidates/v1.3.1-rc.2"
+          ZIP="all-star-bulk-order-block-1.3.1-rc.2.zip"
+          rm -rf "$OUT"
+          mkdir -p "$OUT/source"
+          cp -R "$SRC/." "$OUT/source/"
+          (
+            cd /tmp/asbo-v131-rc2
+            zip -qr "$GITHUB_WORKSPACE/$OUT/$ZIP" "$ROOTNAME"
+          )
+          unzip -t "$OUT/$ZIP" | grep -q "No errors detected"
+          sha256sum "$OUT/$ZIP" > "$OUT/$ZIP.sha256"
+          du -h "$OUT/$ZIP"
+
+      - name: Commit review candidate only to review branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add candidates/v1.3.1-rc.2
+          if git diff --cached --quiet; then
+            echo "Candidate already current."
+            exit 0
+          fi
+          git commit -m "review: build ASBO v1.3.1-rc.2 candidate"
+          git push origin review-v1.3.1-rights-performance
