@@ -69,26 +69,26 @@ jobs:
           MAIN="$ROOT/all-star-bulk-order-block.php"
           ART="$ROOT/includes/class-asbo-artwork-review.php"
           ACCOUNT="$ROOT/includes/class-asbo-account-experience.php"
-          grep -Fq "Version: 1.3.1-rc.1" "$MAIN"
-          grep -Fq "_asbo_pricing_matrix" "$MAIN"
-          grep -Fq "asbo_add_bulk_to_cart" "$MAIN"
-          grep -Fq "base_unit_price" "$MAIN"
-          grep -Fq "rightsConfirmed" "$MAIN"
-          grep -Fq "_asbo_artwork_rights_confirmed" "$MAIN"
-          grep -Fq "ARTWORK_RIGHTS_VERSION" "$MAIN"
-          grep -Fq "summaryCache" "$MAIN"
-          grep -Fq "product_term_map" "$MAIN"
-          grep -Fq "static $cache = array();" "$MAIN"
-          grep -Fq "asbo_artwork_rights" "$ART"
-          grep -Fq "Artwork rights" "$ART"
-          grep -Fq "record_rights_confirmation" "$ART"
-          if grep -Fq "'url'           => esc_url_raw( $result['url'] )" "$ART"; then
+          grep -Fq 'Version: 1.3.1-rc.1' "$MAIN"
+          grep -Fq '_asbo_pricing_matrix' "$MAIN"
+          grep -Fq 'asbo_add_bulk_to_cart' "$MAIN"
+          grep -Fq 'base_unit_price' "$MAIN"
+          grep -Fq 'rightsConfirmed' "$MAIN"
+          grep -Fq '_asbo_artwork_rights_confirmed' "$MAIN"
+          grep -Fq 'ARTWORK_RIGHTS_VERSION' "$MAIN"
+          grep -Fq 'summaryCache' "$MAIN"
+          grep -Fq 'product_term_map' "$MAIN"
+          grep -Fq 'static $cache = array();' "$MAIN"
+          grep -Fq 'asbo_artwork_rights' "$ART"
+          grep -Fq 'Artwork rights' "$ART"
+          grep -Fq 'record_rights_confirmation' "$ART"
+          if grep -Fq "'url'           => esc_url_raw( \$result['url'] )" "$ART"; then
             echo "New uploads still persist a public upload URL" >&2
             exit 1
           fi
-          grep -Fq "customer_orders( 50 )" "$ACCOUNT"
+          grep -Fq 'customer_orders( 50 )' "$ACCOUNT"
           grep -Fq "asbo-account-experience', false, array(), '1.3.1-rc.1'" "$ACCOUNT"
-          if grep -Rq "add_fee(" "$ROOT"; then
+          if grep -Rq 'add_fee(' "$ROOT"; then
             echo "Unexpected WooCommerce fee mutation introduced" >&2
             exit 1
           fi
