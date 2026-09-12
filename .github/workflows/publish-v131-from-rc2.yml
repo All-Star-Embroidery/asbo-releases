@@ -1,0 +1,195 @@
+name: Publish ASBO v1.3.1 from RC2
+
+on:
+  push:
+    branches:
+      - review-v1.3.1-rights-performance
+    paths:
+      - '.release-v131'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed RC2 branch
+        uses: actions/checkout@v5
+        with:
+          ref: review-v1.3.1-rights-performance
+          fetch-depth: 0
+
+      - name: Build exact stable 1.3.1 package from RC2 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="candidates/v1.3.1-rc.2/source"
+          ROOT="all-star-bulk-order-block-v1.0.0"
+          BUILD="/tmp/asbo-v131/$ROOT"
+          ZIP="/tmp/all-star-bulk-order-block-1.3.1.zip"
+
+          test -f "$SRC/all-star-bulk-order-block.php"
+          rm -rf /tmp/asbo-v131 "$ZIP"
+          mkdir -p "$BUILD"
+          cp -R "$SRC/." "$BUILD/"
+
+          python3 - "$BUILD" <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path(sys.argv[1])
+          exts = {'.php','.json','.js','.css','.txt','.md'}
+          for p in root.rglob('*'):
+              if p.is_file() and p.suffix.lower() in exts:
+                  data = p.read_text(errors='strict')
+                  data = data.replace('1.3.1-rc.2', '1.3.1')
+                  p.write_text(data)
+          PY
+
+          grep -q 'Version: 1.3.1' "$BUILD/all-star-bulk-order-block.php"
+          grep -q 'private const VERSION = '\''1.3.1'\''' "$BUILD/all-star-bulk-order-block.php"
+          grep -q '"version": "1.3.1"' "$BUILD/block/block.json"
+          ! grep -R -q '1.3.1-rc.2' "$BUILD"
+
+          find "$BUILD" -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
+          python3 -m json.tool "$BUILD/block/block.json" >/dev/null
+          node --check "$BUILD/block/editor.js"
+          node --check "$BUILD/assets/asbo-frontend.js"
+
+          # Critical regression guards retained from RC2.
+          grep -q 'woocommerce_store_api_checkout_update_order_meta' "$BUILD/all-star-bulk-order-block.php"
+          grep -q "declare_compatibility( 'custom_order_tables'" "$BUILD/all-star-bulk-order-block.php"
+          grep -q "declare_compatibility( 'cart_checkout_blocks'" "$BUILD/all-star-bulk-order-block.php"
+          grep -q 'asbo_get_nonce' "$BUILD/all-star-bulk-order-block.php"
+          grep -q 'data-asbo-ready' "$BUILD/assets/asbo-frontend.js" || grep -q 'asboReady' "$BUILD/assets/asbo-frontend.js"
+          grep -q 'render_artwork_hub' "$BUILD/includes/class-asbo-account-experience.php"
+          grep -q '_asbo_artwork_rights_confirmed' "$BUILD/all-star-bulk-order-block.php"
+          grep -q '_asbo_pricing_matrix' "$BUILD/all-star-bulk-order-block.php"
+
+          (
+            cd /tmp/asbo-v131
+            zip -qr "$ZIP" "$ROOT"
+          )
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -q "$ROOT/all-star-bulk-order-block.php"
+          unzip -p "$ZIP" "$ROOT/all-star-bulk-order-block.php" | grep -q 'Version: 1.3.1'
+          sha256sum "$ZIP" > /tmp/all-star-bulk-order-block-1.3.1.zip.sha256
+          echo "Built $(stat -c%s "$ZIP") bytes"
+          cat /tmp/all-star-bulk-order-block-1.3.1.zip.sha256
+
+      - name: Checkout production main separately
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          path: production-main
+          fetch-depth: 0
+
+      - name: Stage package and release documentation on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd production-main
+          cp /tmp/all-star-bulk-order-block-1.3.1.zip ./all-star-bulk-order-block-1.3.1.zip
+          cp /tmp/all-star-bulk-order-block-1.3.1.zip.sha256 ./all-star-bulk-order-block-1.3.1.zip.sha256
+
+          cat > RELEASE-1.3.1.md <<'EOF'
+          # All Star Bulk Order Block v1.3.1
+
+          Production hardening, artwork authorization, compatibility, and performance release based on the reviewed v1.3.1 RC2 candidate.
+
+          ## Highlights
+          - Adds explicit customer artwork-use authorization and records the consent/version/timestamp on WooCommerce orders.
+          - Preserves the protected post-checkout artwork workflow and adds safer storage checks.
+          - Fixes the My Account Artwork fallback so the Artwork tab renders the Artwork hub rather than the Dashboard.
+          - Prevents duplicate ASBO cart groups when a customer backs out of checkout, changes quantities, and submits again.
+          - Adds WooCommerce Checkout Block / Store API order-meta support and formal HPOS + Cart/Checkout Blocks compatibility declarations.
+          - Fetches a fresh submission nonce instead of baking a nonce into cacheable page HTML.
+          - Moves the large bulk-order and My Account CSS/JS payloads into browser-cacheable static assets.
+          - Makes multiple ASBO blocks on one page independent and prevents duplicate event listeners.
+          - Removes initial force-scroll on page load.
+          - Reduces repeated pricing/category work and limits the legacy product-title repair to a locked admin-only migration path.
+          - Adds short negative caching for failed GitHub update checks and makes auto-update behavior filterable.
+          - Keeps WooCommerce Regular Price authoritative for 1+ and `_asbo_pricing_matrix` authoritative for configured bulk tiers.
+          - Keeps Supplier Sync variation IDs, ASBO Matrix cart metadata, artwork review, and My Account behavior compatible.
+
+          ## Packaging
+          The ZIP intentionally retains the historical `all-star-bulk-order-block-v1.0.0/` root directory so existing WordPress installations update in place rather than risking installation as a second plugin directory.
+
+          ## Deferred intentionally
+          Lazy-loading product variation/configuration panels and deeper My Account CSS consolidation remain separate future performance work because they change more of the runtime/UI lifecycle and should be tested independently.
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('README.md')
+          if p.exists():
+              s = p.read_text()
+              s = s.replace('Current production release: **v1.3.0**', 'Current production release: **v1.3.1**')
+              s = s.replace('Current production release: `1.3.0`', 'Current production release: `1.3.1`')
+              p.write_text(s)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add all-star-bulk-order-block-1.3.1.zip all-star-bulk-order-block-1.3.1.zip.sha256 RELEASE-1.3.1.md README.md
+          git commit -m 'release: stage ASBO 1.3.1 production package'
+          git push origin HEAD:main
+
+      - name: Create GitHub Release and verify asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd production-main
+          TAG="asbo-v1.3.1"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" all-star-bulk-order-block-1.3.1.zip all-star-bulk-order-block-1.3.1.zip.sha256 --clobber
+            gh release edit "$TAG" --title 'All Star Bulk Order Block v1.3.1' --notes-file RELEASE-1.3.1.md
+          else
+            gh release create "$TAG" all-star-bulk-order-block-1.3.1.zip all-star-bulk-order-block-1.3.1.zip.sha256 \
+              --target main \
+              --title 'All Star Bulk Order Block v1.3.1' \
+              --notes-file RELEASE-1.3.1.md
+          fi
+
+          rm -f /tmp/release-v131.zip
+          gh release download "$TAG" -p 'all-star-bulk-order-block-1.3.1.zip' -O /tmp/release-v131.zip
+          test "$(sha256sum /tmp/release-v131.zip | awk '{print $1}')" = "$(awk '{print $1}' all-star-bulk-order-block-1.3.1.zip.sha256)"
+          unzip -t /tmp/release-v131.zip >/dev/null
+
+      - name: Point WordPress production updater to v1.3.1 only after release verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd production-main
+          git pull --ff-only origin main
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          p = Path('latest.json')
+          data = json.loads(p.read_text())
+          data['version'] = '1.3.1'
+          data['download_url'] = 'https://github.com/All-Star-Embroidery/asbo-releases/releases/download/asbo-v1.3.1/all-star-bulk-order-block-1.3.1.zip'
+          data['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000')
+          data['changelog'] = '<h4>1.3.1</h4><ul><li>Adds explicit artwork-use authorization recorded on WooCommerce orders.</li><li>Fixes My Account Artwork fallback rendering and duplicate ASBO carts after resubmission.</li><li>Adds Checkout Block/Store API and HPOS compatibility.</li><li>Uses fresh nonces for cached pages and moves large frontend/account CSS and JS to cacheable assets.</li><li>Improves update, category, pricing, and catalog-repair performance while preserving ASBO pricing and Supplier Sync boundaries.</li></ul>'
+          p.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+
+          git add latest.json
+          git commit -m 'release: point updater to ASBO 1.3.1'
+          git push origin HEAD:main
+
+      - name: Final release verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd production-main
+          git pull --ff-only origin main
+          grep -q '"version": "1.3.1"' latest.json
+          grep -q 'asbo-v1.3.1/all-star-bulk-order-block-1.3.1.zip' latest.json
+          gh release view asbo-v1.3.1 >/dev/null
+          echo 'ASBO v1.3.1 is published and production updater is live.'
