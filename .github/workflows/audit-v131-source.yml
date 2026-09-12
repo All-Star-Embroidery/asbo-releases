@@ -1,0 +1,52 @@
+name: Prepare ASBO v1.3.1 Audit Source
+
+on:
+  push:
+    branches:
+      - review-v1.3.1-rights-performance
+    paths:
+      - .seed-audit-v131
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout review branch
+        uses: actions/checkout@v4
+        with:
+          ref: review-v1.3.1-rights-performance
+          fetch-depth: 0
+
+      - name: Download and verify production v1.3.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="All-Star-Embroidery/asbo-releases"
+          VERSION="1.3.0"
+          ZIP="all-star-bulk-order-block-${VERSION}.zip"
+          ROOT="all-star-bulk-order-block-v1.0.0"
+          rm -rf /tmp/asbo-audit audit/v1.3.0-source
+          mkdir -p /tmp/asbo-audit audit/v1.3.0-source
+          gh release download "v${VERSION}" -R "$REPO" --pattern "$ZIP" --dir /tmp/asbo-audit
+          unzip -t "/tmp/asbo-audit/$ZIP" | grep -q "No errors detected"
+          unzip -q "/tmp/asbo-audit/$ZIP" -d /tmp/asbo-audit/unpacked
+          test -f "/tmp/asbo-audit/unpacked/$ROOT/all-star-bulk-order-block.php"
+          cp -R "/tmp/asbo-audit/unpacked/$ROOT/." audit/v1.3.0-source/
+          find audit/v1.3.0-source -maxdepth 3 -type f -print | sort
+
+      - name: Commit audit source to review branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add audit/v1.3.0-source
+          if git diff --cached --quiet; then
+            echo "Audit source already current."
+            exit 0
+          fi
+          git commit -m "audit: extract production ASBO v1.3.0 source"
+          git push origin review-v1.3.1-rights-performance
